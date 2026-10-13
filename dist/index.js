@@ -562,6 +562,12 @@ const QuickAccessContent = () => {
     const [displayTarget, setDisplayTarget] = SP_REACT.useState("external");
     const [osType, setOsType] = SP_REACT.useState("steamos");
     const [powerProfile, setPowerProfile] = SP_REACT.useState("Unknown");
+    const [limits, setLimits] = SP_REACT.useState(null);
+    const [gpuPower, setGpuPower] = SP_REACT.useState(100);
+    const [gpuClock, setGpuClock] = SP_REACT.useState(2000);
+    const [cpuTdp, setCpuTdp] = SP_REACT.useState(20);
+    const [cpuClock, setCpuClock] = SP_REACT.useState(4000);
+    const limitTimers = SP_REACT.useRef({});
     const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
     // 1. Initial Load: Fetch Vendor Setting once
     SP_REACT.useEffect(() => {
@@ -615,6 +621,40 @@ const QuickAccessContent = () => {
         const interval = setInterval(poll, 3000);
         return () => clearInterval(interval);
     }, []);
+    const loadLimits = async () => {
+        try {
+            const status = await call("get_limit_status");
+            if (!status)
+                return;
+            setLimits(status);
+            setGpuPower(Number(status.gpu_power) || 0);
+            setGpuClock(Number(status.gpu_clock) || 0);
+            setCpuTdp(Number(status.cpu_tdp) || 0);
+            setCpuClock(Number(status.cpu_clock) || 0);
+        }
+        catch (e) {
+            console.error("Limit status error:", e);
+        }
+    };
+    SP_REACT.useEffect(() => {
+        loadLimits();
+    }, [gpuStatus.active]);
+    const queueLimit = (method, value) => {
+        const existing = limitTimers.current[method];
+        if (existing)
+            window.clearTimeout(existing);
+        limitTimers.current[method] = window.setTimeout(async () => {
+            try {
+                const result = await call(method, Math.round(value));
+                if (result && result !== "Success") {
+                    toaster.toast({ title: "Power limit", body: String(result), duration: 5000 });
+                }
+            }
+            catch (e) {
+                toaster.toast({ title: "Power limit", body: "Could not apply the limit." });
+            }
+        }, 400);
+    };
     const handleAction = async (method, label) => {
         if (isLoading)
             return;
@@ -751,16 +791,39 @@ const QuickAccessContent = () => {
                             await call("reboot_system");
                         }, children: "Restart Now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { onClick: () => setNeedsReboot(false), children: "Restart Later" }) })] }));
     }
-    return (SP_JSX.jsxs(DFL.Focusable, { children: [(gpuStatus.active) && (SP_JSX.jsx(DFL.PanelSection, { title: "Performance Monitor", children: SP_JSX.jsxs("div", { style: statsStyle, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Temperature" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.temp })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Power Draw" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.power })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "VRAM Usage" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.vram })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "GPU Load" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.util })] })] }) })), (osType === "bazzite") && (selectedVendor === "nvidia") && (SP_JSX.jsx(DFL.PanelSection, { title: "System Warning", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { color: "#ff5555", fontSize: "14px", marginBottom: "10px" }, children: [SP_JSX.jsx("strong", { children: "Wrong OS Image Detected!" }), SP_JSX.jsx("br", {}), "You are running standard Bazzite. To use an NVIDIA eGPU, you MUST install the 'bazzite-deck-nvidia' image. The NVIDIA XG Mobile will not function correctly on this installation. Please install the correct version or select AMD."] }) }) })), SP_JSX.jsx(DFL.PanelSection, { title: "ASUS Hardware Controls", children: SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx("div", { style: { marginBottom: "6px", fontSize: "14px", opacity: 0.8 }, children: "Active Power Profile" }), powerProfile === "Error" || powerProfile === "Unknown" ? (SP_JSX.jsx("div", { style: { color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }, children: "Unable to read motherboard WMI policy." })) : (SP_JSX.jsx(DFL.Dropdown, { selectedOption: powerProfile, rgOptions: [
+    return (SP_JSX.jsxs(DFL.Focusable, { children: [(gpuStatus.active) && (SP_JSX.jsx(DFL.PanelSection, { title: "Performance Monitor", children: SP_JSX.jsxs("div", { style: statsStyle, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Temperature" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.temp })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Power Draw" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.power })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "VRAM Usage" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.vram })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "GPU Load" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.util })] })] }) })), (osType === "bazzite") && (selectedVendor === "nvidia") && (SP_JSX.jsx(DFL.PanelSection, { title: "System Warning", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { color: "#ff5555", fontSize: "14px", marginBottom: "10px" }, children: [SP_JSX.jsx("strong", { children: "Wrong OS Image Detected!" }), SP_JSX.jsx("br", {}), "You are running standard Bazzite. To use an NVIDIA eGPU, you MUST install the 'bazzite-deck-nvidia' image. The NVIDIA XG Mobile will not function correctly on this installation. Please install the correct version or select AMD."] }) }) })), SP_JSX.jsx(DFL.PanelSection, { title: "ASUS Hardware Controls", children: SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx("div", { style: { marginBottom: "6px", fontSize: "14px", opacity: 0.8 }, children: "Active Power Profile. This motherboard mode does not cap GPU or CPU watts. Use Power and Clocks below to lower temperatures." }), powerProfile === "Error" || powerProfile === "Unknown" ? (SP_JSX.jsx("div", { style: { color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }, children: "Unable to read motherboard WMI policy." })) : (SP_JSX.jsx(DFL.Dropdown, { selectedOption: powerProfile, rgOptions: [
                                 { data: "Quiet", label: "Quiet" },
                                 { data: "Balanced", label: "Balanced" },
                                 { data: "Performance", label: "Performance" }
                             ], onChange: async (option) => {
                                 const newProfile = option.data;
                                 setPowerProfile(newProfile);
-                                await call("set_power_profile", { profile: newProfile });
-                                toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
-                            } }))] }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Controls", children: isLoading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" }, children: [SP_JSX.jsx(DFL.Spinner, {}), SP_JSX.jsxs("span", { style: { marginLeft: "10px" }, children: [statusText, "..."] })] }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.connected || gpuStatus.active || isLoading, onClick: () => handleAction("enable_egpu", "Enabling"), children: gpuStatus.active ? "XG Mobile is Active" : "Enable XG Mobile" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.active || isLoading, onClick: () => handleAction("eject_egpu", "Ejecting"), children: gpuStatus.active ? "Eject XG Mobile" : "XG Mobile is not Active" }) }), showSleepWarning && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                                const result = await call("set_power_profile", newProfile);
+                                toaster.toast({
+                                    title: "ASUS Profile",
+                                    body: result === "Success" ? `Set to ${newProfile}` : String(result),
+                                    duration: 5000
+                                });
+                            } }))] }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Power and Clocks", children: [!limits && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.8 }, children: "Reading power limits..." }) })), limits && !limits.gpu_ready && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.8 }, children: "Enable the XG Mobile to cap its power and clocks. The GPU running at 86\u00B0C is its default power limit, not the profile above." }) })), limits?.gpu_ready && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "GPU power limit", description: "Lower the XG Mobile wattage to bring GPU temperature down.", value: gpuPower, min: Number(limits.gpu_power_min) || 5, max: Number(limits.gpu_power_max) || 150, step: 5, showValue: true, valueSuffix: " W", disabled: !gpuStatus.active || isLoading, onChange: (value) => {
+                                setGpuPower(value);
+                                queueLimit("set_gpu_power_limit", value);
+                            } }) })), limits?.gpu_ready && limits.gpu_clock_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "GPU max clock", description: "Caps the XG Mobile graphics clock.", value: gpuClock, min: Number(limits.gpu_clock_min) || 500, max: Number(limits.gpu_clock_max) || 2500, step: 50, showValue: true, valueSuffix: " MHz", disabled: !gpuStatus.active || isLoading, onChange: (value) => {
+                                setGpuClock(value);
+                                queueLimit("set_gpu_clock_limit", value);
+                            } }) })), limits?.cpu_tdp_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "CPU power limit", description: "Stops the Ally processor from boosting to feed the eGPU.", value: cpuTdp, min: Number(limits.cpu_tdp_min) || 8, max: Number(limits.cpu_tdp_max) || 45, step: 1, showValue: true, valueSuffix: " W", disabled: isLoading, onChange: (value) => {
+                                setCpuTdp(value);
+                                queueLimit("set_cpu_tdp", value);
+                            } }) })), limits && !limits.cpu_tdp_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.8 }, children: "CPU watt control needs ryzenadj, or the ASUS power attributes in the kernel." }) })), limits?.cpu_clock_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "CPU max clock", description: "Caps the processor boost clock that is pushing it to 80\u00B0C.", value: cpuClock, min: Number(limits.cpu_clock_min) || 1400, max: Number(limits.cpu_clock_max) || 5000, step: 100, showValue: true, valueSuffix: " MHz", disabled: isLoading, onChange: (value) => {
+                                setCpuClock(value);
+                                queueLimit("set_cpu_clock_limit", value);
+                            } }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: isLoading, onClick: async () => {
+                                const result = await call("reset_power_limits");
+                                toaster.toast({
+                                    title: "Power limits",
+                                    body: result === "Success" ? "Limits cleared" : String(result)
+                                });
+                                await loadLimits();
+                            }, children: "Reset power limits" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Controls", children: isLoading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" }, children: [SP_JSX.jsx(DFL.Spinner, {}), SP_JSX.jsxs("span", { style: { marginLeft: "10px" }, children: [statusText, "..."] })] }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.connected || gpuStatus.active || isLoading, onClick: () => handleAction("enable_egpu", "Enabling"), children: gpuStatus.active ? "XG Mobile is Active" : "Enable XG Mobile" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.active || isLoading, onClick: () => handleAction("eject_egpu", "Ejecting"), children: gpuStatus.active ? "Eject XG Mobile" : "XG Mobile is not Active" }) }), showSleepWarning && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
                                     backgroundColor: 'rgba(255, 0, 0, 0.15)',
                                     border: '1px solid #ff4444',
                                     padding: '12px',

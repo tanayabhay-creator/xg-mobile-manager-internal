@@ -7,6 +7,8 @@ import decky_plugin
 import shutil
 import pwd
 import time
+import glob
+import re
 from settings import SettingsManager
 from typing import TypeVar
 from datetime import datetime
@@ -42,6 +44,305 @@ def warn(txt):
 
 def error(txt):
   decky.logger.error(txt)
+
+def _clean_env():
+  env = os.environ.copy()
+  env.pop("LD_LIBRARY_PATH", None)
+  return env
+
+def _run_cmd(args):
+  return subprocess.run(args, capture_output=True, text=True, env=_clean_env())
+
+def _read_text(path):
+  try:
+    with open(path, "r") as handle:
+      return handle.read().strip()
+  except Exception:
+    return ""
+
+def _write_text(path, text):
+  try:
+    with open(path, "w") as handle:
+      handle.write(str(text))
+    return ""
+  except Exception as exc:
+    return str(exc)
+
+def _which(name):
+  found = shutil.which(name)
+  if found:
+    return found
+  fallback = f"/usr/bin/{name}"
+  return fallback if os.path.exists(fallback) else ""
+
+def _as_int(value):
+  if isinstance(value, dict):
+    value = next(iter(value.values()), 0)
+  return int(float(value))
+
+def _parse_labeled_number(text, label):
+  match = re.search(rf"{re.escape(label)}\s*:\s*([0-9.]+)", text or "")
+  if not match:
+    return 0
+  return int(float(match.group(1)))
+
+def _nvidia_power_info():
+  smi = _which("nvidia-smi")
+  if not smi:
+    return None
+  result = _run_cmd([smi, "-q", "-d", "POWER"])
+  if result.returncode != 0:
+    return None
+  current = _parse_labeled_number(result.stdout, "Current Power Limit")
+  minimum = _parse_labeled_number(result.stdout, "Min Power Limit")
+  maximum = _parse_labeled_number(result.stdout, "Max Power Limit")
+  if maximum <= 0:
+    return None
+  return {"min": minimum or 5, "max": maximum, "current": current or maximum}
+
+def _nvidia_clock_info():
+  smi = _which("nvidia-smi")
+  if not smi:
+    return None
+  result = _run_cmd([smi, "--query-gpu=clocks.max.graphics", "--format=csv,noheader,nounits"])
+  if result.returncode != 0 or not result.stdout.strip():
+    return None
+  try:
+    maximum = int(float(result.stdout.strip().splitlines()[0].strip()))
+  except Exception:
+    return None
+  if maximum < 800:
+    return None
+  return {"min": 500, "max": maximum}
+
+def _apply_nvidia_power(watts):
+  smi = _which("nvidia-smi")
+  if not smi:
+    return "nvidia-smi was not found"
+  info = _nvidia_power_info()
+  if info:
+    watts = max(info["min"], min(info["max"], int(watts)))
+  result = _run_cmd([smi, "-pl", str(int(watts))])
+  if result.returncode != 0:
+    return (result.stderr or result.stdout or "Failed to set the GPU power limit").strip()
+  return ""
+
+def _apply_nvidia_clock(mhz):
+  smi = _which("nvidia-smi")
+  if not smi:
+    return "nvidia-smi was not found"
+  if int(mhz) <= 0:
+    result = _run_cmd([smi, "-rgc"])
+  else:
+    floor = min(500, int(mhz))
+    result = _run_cmd([smi, "-lgc", f"{floor},{int(mhz)}"])
+  if result.returncode != 0:
+    return (result.stderr or result.stdout or "Failed to set the GPU clock limit").strip()
+  return ""
+
+def _drm_cards():
+  cards = []
+  for path in glob.glob("/sys/class/drm/card[0-9]*"):
+    name = os.path.basename(path)
+    if not name.startswith("card") or not name[4:].isdigit():
+      continue
+    internal = False
+    for status in glob.glob(path + "-eDP*") + glob.glob(path + "-DSI*") + glob.glob(path + "-LVDS*"):
+      if os.path.isdir(status) and _read_text(os.path.join(status, "status")) == "connected":
+        internal = True
+    cards.append({
+      "path": path,
+      "vendor": _read_text(os.path.join(path, "device/vendor")),
+      "internal": internal,
+    })
+  return cards
+
+def _amd_power_info():
+  nodes = []
+  for card in _drm_cards():
+    if card["vendor"] != "0x1002" or card["internal"]:
+      continue
+    nodes.extend(glob.glob(os.path.join(card["path"], "device/hwmon/hwmon*/power1_cap")))
+  if not nodes:
+    return None
+  folder = os.path.dirname(nodes[0])
+
+  def watts(filename, default=0):
+    raw = _read_text(os.path.join(folder, filename))
+    try:
+      return int(int(raw) / 1000000)
+    except Exception:
+      return default
+
+  maximum = watts("power1_cap_max")
+  minimum = watts("power1_cap_min", 5)
+  current = watts("power1_cap")
+  if maximum <= 0:
+    maximum = max(current, 150)
+  if current <= 0:
+    current = maximum
+  return {"min": max(5, minimum), "max": maximum, "current": current, "nodes": nodes}
+
+def _apply_amd_power(watts):
+  info = _amd_power_info()
+  if not info:
+    return "The AMD eGPU power limit was not found"
+  watts = max(info["min"], min(info["max"], int(watts)))
+  errors = []
+  for node in info["nodes"]:
+    err = _write_text(node, watts * 1000000)
+    if err:
+      errors.append(err)
+  return "; ".join(errors)
+
+def _gpu_limit_source():
+  nvidia = _nvidia_power_info()
+  if nvidia:
+    return {"kind": "nvidia", "power": nvidia, "clock": _nvidia_clock_info()}
+  amd = _amd_power_info()
+  if amd:
+    return {"kind": "amd", "power": amd, "clock": None}
+  return {"kind": "none", "power": None, "clock": None}
+
+ARMOURY_ROOT = "/sys/class/firmware-attributes/asus-armoury/attributes"
+PPT_NAMES = ["ppt_pl1_spl", "ppt_pl2_sppt", "ppt_fppt"]
+
+def _armoury_tdp_info():
+  for name in PPT_NAMES:
+    base = os.path.join(ARMOURY_ROOT, name)
+    current_path = os.path.join(base, "current_value")
+    if not os.path.exists(current_path):
+      continue
+    try:
+      current = int(float(_read_text(current_path) or 0))
+      minimum = int(float(_read_text(os.path.join(base, "min_value")) or 5))
+      maximum = int(float(_read_text(os.path.join(base, "max_value")) or 45))
+    except Exception:
+      continue
+    scale = 1000 if maximum > 500 else 1
+    return {
+      "min": max(5, int(minimum / scale)),
+      "max": max(8, int(maximum / scale)),
+      "current": max(1, int((current or maximum) / scale)),
+      "scale": scale,
+    }
+  return None
+
+def _apply_armoury_tdp(watts):
+  info = _armoury_tdp_info()
+  if not info:
+    return "ASUS CPU power attributes were not found"
+  watts = max(info["min"], min(info["max"], int(watts)))
+  raw = watts * info["scale"]
+  wrote = False
+  errors = []
+  for name in PPT_NAMES:
+    path = os.path.join(ARMOURY_ROOT, name, "current_value")
+    if not os.path.exists(path):
+      continue
+    wrote = True
+    err = _write_text(path, raw)
+    if err:
+      errors.append(err)
+  if not wrote:
+    return "ASUS CPU power attributes were not found"
+  return "; ".join(errors)
+
+def _apply_ryzenadj_tdp(watts):
+  tool = _which("ryzenadj")
+  if not tool:
+    return "ryzenadj was not found"
+  mw = max(5000, int(watts) * 1000)
+  result = _run_cmd([
+    tool,
+    f"--stapm-limit={mw}",
+    f"--fast-limit={mw}",
+    f"--slow-limit={mw}",
+  ])
+  if result.returncode != 0:
+    return (result.stderr or result.stdout or "ryzenadj failed").strip()
+  return ""
+
+def _ryzenadj_current():
+  tool = _which("ryzenadj")
+  if not tool:
+    return 0
+  result = _run_cmd([tool, "--info"])
+  match = re.search(r"STAPM LIMIT\s*\|\s*([0-9.]+)", result.stdout or "")
+  if not match:
+    return 0
+  return int(float(match.group(1)))
+
+def _cpu_tdp_bounds():
+  info = _armoury_tdp_info()
+  if info:
+    return info["min"], info["max"], info["current"], True
+  if _which("ryzenadj"):
+    return 8, 45, _ryzenadj_current() or 25, True
+  return 8, 45, 15, False
+
+def _apply_cpu_tdp(watts):
+  ok = False
+  messages = []
+  if _armoury_tdp_info():
+    err = _apply_armoury_tdp(watts)
+    if err:
+      messages.append(err)
+    else:
+      ok = True
+  if _which("ryzenadj"):
+    err = _apply_ryzenadj_tdp(watts)
+    if err:
+      messages.append(err)
+    else:
+      ok = True
+  if ok:
+    return ""
+  if messages:
+    return "; ".join(messages)
+  return "CPU power control was not found. Install ryzenadj, or use a kernel with ASUS power attributes."
+
+def _cpu_freq_files(name):
+  return glob.glob(f"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/{name}")
+
+def _cpu_clock_info():
+  max_files = _cpu_freq_files("cpuinfo_max_freq")
+  current_files = _cpu_freq_files("scaling_max_freq")
+  if not max_files or not current_files:
+    return None
+  try:
+    maximum = int(int(_read_text(max_files[0])) / 1000)
+    current = int(int(_read_text(current_files[0])) / 1000)
+  except Exception:
+    return None
+  if maximum < 1000:
+    return None
+  minimum = min(1400, maximum)
+  return {"min": minimum, "max": maximum, "current": min(max(current, minimum), maximum)}
+
+def _apply_cpu_clock(mhz):
+  info = _cpu_clock_info()
+  if not info:
+    return "CPU clock control was not found"
+  target = info["max"] if int(mhz) <= 0 else int(mhz)
+  target = max(info["min"], min(info["max"], target))
+  errors = []
+  for path in _cpu_freq_files("scaling_max_freq"):
+    err = _write_text(path, target * 1000)
+    if err:
+      errors.append(err)
+      break
+  return errors[0] if errors else ""
+
+_last_limit_error = ""
+
+def _note_limit_error(message):
+  global _last_limit_error
+  if message and message != _last_limit_error:
+    _last_limit_error = message
+    error(f"Power limit: {message}")
+  elif not message:
+    _last_limit_error = ""
 
 class Plugin:
   settings: SettingsManager
@@ -582,25 +883,200 @@ class Plugin:
       return "Error"
 
   async def set_power_profile(self, profile: str):
+    if isinstance(profile, dict):
+      profile = profile.get("profile", "")
     clean_profile = str(profile).strip().lower()
     log(f"WMI PROFILE RECEIVED FROM UI: '{clean_profile}'")
     
     val_to_write = "0"
+    platform_name = "balanced"
     if "balanced" in clean_profile:
       val_to_write = "0"
-    elif "performance" in  clean_profile:
+      platform_name = "balanced"
+    elif "performance" in clean_profile:
       val_to_write = "1"
+      platform_name = "performance"
     elif "quiet" in clean_profile:
       val_to_write = "2"
+      platform_name = "quiet"
 
-    try:
-      policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
-      with open(policy_path, "w") as f:
-        f.write(val_to_write)
+    wrote = False
+    errors = []
+    policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
+    if os.path.exists(policy_path):
+      err = _write_text(policy_path, val_to_write)
+      if err:
+        errors.append(err)
+      else:
+        wrote = True
+
+    profile_path = "/sys/firmware/acpi/platform_profile"
+    choices = _read_text(profile_path + "_choices").split()
+    desired = platform_name
+    if desired not in choices and desired == "quiet" and "low-power" in choices:
+      desired = "low-power"
+    if os.path.exists(profile_path) and desired in choices:
+      err = _write_text(profile_path, desired)
+      if err:
+        errors.append(err)
+      else:
+        wrote = True
+
+    if wrote:
       return "Success"
-    except Exception as e:
-      error(f"Error setting power profile: {e}")
-      return f"Error setting profile: {e}"
+    if errors:
+      return "The power profile did not change. Use the watt and clock sliders. " + errors[0]
+    return "The power profile did not change. Use the watt and clock sliders."
+
+  def _saved_limit(self, key):
+    try:
+      if not getattr(Plugin, "settings", None):
+        return 0
+      return int(float(Plugin.settings.getSetting(key, 0) or 0))
+    except Exception:
+      return 0
+
+  async def get_limit_status(self):
+    source = _gpu_limit_source()
+    power = source["power"] or {"min": 10, "max": 150, "current": 100}
+    clock = source["clock"]
+    cpu_min, cpu_max, cpu_current, cpu_ok = _cpu_tdp_bounds()
+    clocks = _cpu_clock_info() or {"min": 1400, "max": 5000, "current": 5000}
+    saved_power = self._saved_limit("gpu_power_watts")
+    saved_clock = self._saved_limit("gpu_clock_mhz")
+    saved_tdp = self._saved_limit("cpu_tdp_watts")
+    saved_cpu_clock = self._saved_limit("cpu_clock_mhz")
+
+    def clamp(value, low, high):
+      return min(high, max(low, value))
+
+    clock_min = clock["min"] if clock else 500
+    clock_max = clock["max"] if clock else 2500
+    return {
+      "gpu_ready": source["kind"] != "none",
+      "gpu_kind": source["kind"],
+      "gpu_power_min": power["min"],
+      "gpu_power_max": power["max"],
+      "gpu_power": clamp(saved_power or power["current"], power["min"], power["max"]),
+      "gpu_clock_supported": clock is not None,
+      "gpu_clock_min": clock_min,
+      "gpu_clock_max": clock_max,
+      "gpu_clock": clamp(saved_clock or clock_max, clock_min, clock_max),
+      "cpu_tdp_supported": cpu_ok,
+      "cpu_tdp_min": cpu_min,
+      "cpu_tdp_max": cpu_max,
+      "cpu_tdp": clamp(saved_tdp or cpu_current, cpu_min, cpu_max),
+      "cpu_clock_supported": _cpu_clock_info() is not None,
+      "cpu_clock_min": clocks["min"],
+      "cpu_clock_max": clocks["max"],
+      "cpu_clock": clamp(saved_cpu_clock or clocks["current"], clocks["min"], clocks["max"]),
+    }
+
+  async def apply_saved_limits(self):
+    messages = []
+    gpu_power = self._saved_limit("gpu_power_watts")
+    gpu_clock = self._saved_limit("gpu_clock_mhz")
+    cpu_tdp = self._saved_limit("cpu_tdp_watts")
+    cpu_clock = self._saved_limit("cpu_clock_mhz")
+    source = _gpu_limit_source() if gpu_power > 0 or gpu_clock > 0 else {"kind": "none", "power": None, "clock": None}
+    if gpu_power > 0:
+      if source["kind"] == "nvidia":
+        err = _apply_nvidia_power(gpu_power)
+      elif source["kind"] == "amd":
+        err = _apply_amd_power(gpu_power)
+      else:
+        err = ""
+      if err:
+        messages.append(err)
+    if gpu_clock > 0 and source["kind"] == "nvidia":
+      err = _apply_nvidia_clock(gpu_clock)
+      if err:
+        messages.append(err)
+    if cpu_tdp > 0:
+      err = _apply_cpu_tdp(cpu_tdp)
+      if err:
+        messages.append(err)
+    if cpu_clock > 0:
+      err = _apply_cpu_clock(cpu_clock)
+      if err:
+        messages.append(err)
+    _note_limit_error("; ".join(messages))
+    return "Success" if not messages else "; ".join(messages)
+
+  async def set_gpu_power_limit(self, watts):
+    watts = _as_int(watts)
+    source = _gpu_limit_source()
+    if source["kind"] == "nvidia":
+      err = _apply_nvidia_power(watts)
+    elif source["kind"] == "amd":
+      err = _apply_amd_power(watts)
+    else:
+      err = "The eGPU is not available yet. Enable the XG Mobile first."
+    if err:
+      return err
+    Plugin.settings.setSetting("gpu_power_watts", watts)
+    return "Success"
+
+  async def set_gpu_clock_limit(self, mhz):
+    mhz = _as_int(mhz)
+    if _gpu_limit_source()["kind"] != "nvidia":
+      return "Clock limiting is available for the NVIDIA XG Mobile."
+    err = _apply_nvidia_clock(mhz)
+    if err:
+      return err
+    Plugin.settings.setSetting("gpu_clock_mhz", mhz)
+    return "Success"
+
+  async def set_cpu_tdp(self, watts):
+    watts = _as_int(watts)
+    err = _apply_cpu_tdp(watts)
+    if err:
+      return err
+    Plugin.settings.setSetting("cpu_tdp_watts", watts)
+    return "Success"
+
+  async def set_cpu_clock_limit(self, mhz):
+    mhz = _as_int(mhz)
+    err = _apply_cpu_clock(mhz)
+    if err:
+      return err
+    Plugin.settings.setSetting("cpu_clock_mhz", mhz)
+    return "Success"
+
+  async def reset_power_limits(self):
+    for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz"):
+      Plugin.settings.setSetting(key, 0)
+    messages = []
+    source = _gpu_limit_source()
+    if source["kind"] == "nvidia" and source["power"]:
+      err = _apply_nvidia_power(source["power"]["max"])
+      if err:
+        messages.append(err)
+      err = _apply_nvidia_clock(0)
+      if err:
+        messages.append(err)
+    elif source["kind"] == "amd" and source["power"]:
+      err = _apply_amd_power(source["power"]["max"])
+      if err:
+        messages.append(err)
+    _, cpu_max, _, cpu_ok = _cpu_tdp_bounds()
+    if cpu_ok:
+      err = _apply_cpu_tdp(cpu_max)
+      if err:
+        messages.append(err)
+    if _cpu_clock_info():
+      err = _apply_cpu_clock(0)
+      if err:
+        messages.append(err)
+    return "Success" if not messages else "; ".join(messages)
+
+  async def _keep_limits(self):
+    while True:
+      await asyncio.sleep(5)
+      try:
+        await self.apply_saved_limits()
+      except Exception as exc:
+        _note_limit_error(str(exc))
 
   async def get_live_logs(self, log_type="install"):
     """Called by the frontend every 500ms. log_type can be 'repair' or 'install' or 'uninstall'."""
@@ -791,6 +1267,7 @@ class Plugin:
     
     asyncio.create_task(self.watch_eject_request())
     asyncio.create_task(self.watch_enable_request())
+    asyncio.create_task(self._keep_limits())
 
 #    try:
 #      # Check if the eGPU survived the reboot and is still active

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   ButtonItem, 
   Spinner, 
@@ -8,7 +8,8 @@ import {
   PanelSection, 
   PanelSectionRow,
   Focusable,
-  Dropdown
+  Dropdown,
+  SliderField
 } from "@decky/ui";
 import { call, toaster } from "@decky/api";
 import { LiveLogViewerModal } from "./LiveLogViewerModal";
@@ -43,6 +44,12 @@ export const QuickAccessContent = () => {
   const [displayTarget, setDisplayTarget] = useState("external");
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
+  const [limits, setLimits] = useState<any>(null);
+  const [gpuPower, setGpuPower] = useState(100);
+  const [gpuClock, setGpuClock] = useState(2000);
+  const [cpuTdp, setCpuTdp] = useState(20);
+  const [cpuClock, setCpuClock] = useState(4000);
+  const limitTimers = useRef<Record<string, number>>({});
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
   // 1. Initial Load: Fetch Vendor Setting once
@@ -94,6 +101,39 @@ export const QuickAccessContent = () => {
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  const loadLimits = async () => {
+    try {
+      const status = await call("get_limit_status") as any;
+      if (!status) return;
+      setLimits(status);
+      setGpuPower(Number(status.gpu_power) || 0);
+      setGpuClock(Number(status.gpu_clock) || 0);
+      setCpuTdp(Number(status.cpu_tdp) || 0);
+      setCpuClock(Number(status.cpu_clock) || 0);
+    } catch (e) {
+      console.error("Limit status error:", e);
+    }
+  };
+
+  useEffect(() => {
+    loadLimits();
+  }, [gpuStatus.active]);
+
+  const queueLimit = (method: string, value: number) => {
+    const existing = limitTimers.current[method];
+    if (existing) window.clearTimeout(existing);
+    limitTimers.current[method] = window.setTimeout(async () => {
+      try {
+        const result = await call(method, Math.round(value)) as string;
+        if (result && result !== "Success") {
+          toaster.toast({ title: "Power limit", body: String(result), duration: 5000 });
+        }
+      } catch (e) {
+        toaster.toast({ title: "Power limit", body: "Could not apply the limit." });
+      }
+    }, 400);
+  };
 
   const handleAction = async (method: string, label: string) => {
     if (isLoading) return;
@@ -315,7 +355,7 @@ export const QuickAccessContent = () => {
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
-            Active Power Profile
+            Active Power Profile. This motherboard mode does not cap GPU or CPU watts. Use Power and Clocks below to lower temperatures.
           </div>
           {powerProfile === "Error" || powerProfile === "Unknown" ? (
             <div style={{ color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }}>
@@ -332,11 +372,129 @@ export const QuickAccessContent = () => {
               onChange={async (option: any) => {
                 const newProfile = option.data;
                 setPowerProfile(newProfile);
-                await call("set_power_profile", { profile: newProfile });
-                toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
+                const result = await call("set_power_profile", newProfile) as string;
+                toaster.toast({
+                  title: "ASUS Profile",
+                  body: result === "Success" ? `Set to ${newProfile}` : String(result),
+                  duration: 5000
+                });
               }}
             />
           )}
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Power and Clocks">
+        {!limits && (
+          <PanelSectionRow>
+            <div style={{ fontSize: "13px", opacity: 0.8 }}>Reading power limits...</div>
+          </PanelSectionRow>
+        )}
+        {limits && !limits.gpu_ready && (
+          <PanelSectionRow>
+            <div style={{ fontSize: "13px", opacity: 0.8 }}>
+              Enable the XG Mobile to cap its power and clocks. The GPU running at 86°C is its default power limit, not the profile above.
+            </div>
+          </PanelSectionRow>
+        )}
+        {limits?.gpu_ready && (
+          <PanelSectionRow>
+            <SliderField
+              label="GPU power limit"
+              description="Lower the XG Mobile wattage to bring GPU temperature down."
+              value={gpuPower}
+              min={Number(limits.gpu_power_min) || 5}
+              max={Number(limits.gpu_power_max) || 150}
+              step={5}
+              showValue
+              valueSuffix=" W"
+              disabled={!gpuStatus.active || isLoading}
+              onChange={(value) => {
+                setGpuPower(value);
+                queueLimit("set_gpu_power_limit", value);
+              }}
+            />
+          </PanelSectionRow>
+        )}
+        {limits?.gpu_ready && limits.gpu_clock_supported && (
+          <PanelSectionRow>
+            <SliderField
+              label="GPU max clock"
+              description="Caps the XG Mobile graphics clock."
+              value={gpuClock}
+              min={Number(limits.gpu_clock_min) || 500}
+              max={Number(limits.gpu_clock_max) || 2500}
+              step={50}
+              showValue
+              valueSuffix=" MHz"
+              disabled={!gpuStatus.active || isLoading}
+              onChange={(value) => {
+                setGpuClock(value);
+                queueLimit("set_gpu_clock_limit", value);
+              }}
+            />
+          </PanelSectionRow>
+        )}
+        {limits?.cpu_tdp_supported && (
+          <PanelSectionRow>
+            <SliderField
+              label="CPU power limit"
+              description="Stops the Ally processor from boosting to feed the eGPU."
+              value={cpuTdp}
+              min={Number(limits.cpu_tdp_min) || 8}
+              max={Number(limits.cpu_tdp_max) || 45}
+              step={1}
+              showValue
+              valueSuffix=" W"
+              disabled={isLoading}
+              onChange={(value) => {
+                setCpuTdp(value);
+                queueLimit("set_cpu_tdp", value);
+              }}
+            />
+          </PanelSectionRow>
+        )}
+        {limits && !limits.cpu_tdp_supported && (
+          <PanelSectionRow>
+            <div style={{ fontSize: "13px", opacity: 0.8 }}>
+              CPU watt control needs ryzenadj, or the ASUS power attributes in the kernel.
+            </div>
+          </PanelSectionRow>
+        )}
+        {limits?.cpu_clock_supported && (
+          <PanelSectionRow>
+            <SliderField
+              label="CPU max clock"
+              description="Caps the processor boost clock that is pushing it to 80°C."
+              value={cpuClock}
+              min={Number(limits.cpu_clock_min) || 1400}
+              max={Number(limits.cpu_clock_max) || 5000}
+              step={100}
+              showValue
+              valueSuffix=" MHz"
+              disabled={isLoading}
+              onChange={(value) => {
+                setCpuClock(value);
+                queueLimit("set_cpu_clock_limit", value);
+              }}
+            />
+          </PanelSectionRow>
+        )}
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={isLoading}
+            onClick={async () => {
+              const result = await call("reset_power_limits") as string;
+              toaster.toast({
+                title: "Power limits",
+                body: result === "Success" ? "Limits cleared" : String(result)
+              });
+              await loadLimits();
+            }}
+          >
+            Reset power limits
+          </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
