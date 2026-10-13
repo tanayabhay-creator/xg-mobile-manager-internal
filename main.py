@@ -270,10 +270,12 @@ def _apply_ryzenadj_tdp(watts):
   ])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "ryzenadj failed").strip()
+  # The medium window is 1 second, so a boost cannot keep running while the die heats up.
+  _run_cmd([tool, "--slow-time=1", "--stapm-time=5"])
   return ""
 
 def _apply_cpu_thermal_limit():
-  """The Ally firmware leaves the CPU uncapped, so a short boost reaches 106°C and the machine resets."""
+  """Backstop only. The watt limit is what ends the boost."""
   tool = _which("ryzenadj")
   if not tool:
     return ""
@@ -1213,18 +1215,36 @@ class Plugin:
         messages.append(err)
     return "Success" if not messages else "; ".join(messages)
 
+  async def _hold_cpu_boost(self):
+    """End the boost at the watt cap. 95°C is only used if that cap is missing."""
+    watts = self._saved_limit("cpu_tdp_watts")
+    if watts <= 0:
+      watts = _ryzenadj_current()
+    if 8 <= watts <= 54:
+      err = _apply_cpu_tdp(watts)
+      if err:
+        _note_limit_error(err)
+    err = _apply_cpu_thermal_limit()
+    if err:
+      _note_limit_error(err)
+
   async def _keep_limits(self):
     try:
       if getattr(Plugin, "settings", None):
         Plugin.settings.setSetting("igpu_clock_mhz", 0)
       _restore_igpu_automatic()
       await self.apply_saved_limits()
+      await self._hold_cpu_boost()
     except Exception as exc:
       _note_limit_error(str(exc))
+    tick = 0
     while True:
-      await asyncio.sleep(5)
+      await asyncio.sleep(1)
+      tick += 1
       try:
-        await self.apply_saved_limits()
+        await self._hold_cpu_boost()
+        if tick % 5 == 0:
+          await self.apply_saved_limits()
       except Exception as exc:
         _note_limit_error(str(exc))
 
