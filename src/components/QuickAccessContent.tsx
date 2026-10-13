@@ -441,7 +441,7 @@ export const QuickAccessContent = () => {
           <PanelSectionRow>
             <SliderField
               label="iGPU max clock"
-              description="Caps the Ally graphics clock that drives the internal screen."
+              description="Caps the Ally graphics boost. 800 MHz is the idle floor; raise this to let it clock higher."
               value={igpuClock}
               min={Number(limits.igpu_clock_min) || 400}
               max={Number(limits.igpu_clock_max) || 2700}

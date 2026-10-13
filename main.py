@@ -348,28 +348,25 @@ def _mhz_values(text):
   return [int(value) for value in re.findall(r"(\d+)\s*Mhz", text or "", re.I)]
 
 def _igpu_clock_info():
+  if not _which("ryzenadj"):
+    return None
   device = _igpu_device()
-  levels = []
-  od_min = 0
-  od_max = 0
+  minimum = 800
+  maximum = 2700
   if device:
-    levels = _mhz_values(_read_text(os.path.join(device, "pp_dpm_sclk")))
+    levels = [value for value in _mhz_values(_read_text(os.path.join(device, "pp_dpm_sclk"))) if value > 800]
     od_text = _read_text(os.path.join(device, "pp_od_clk_voltage"))
     match = re.search(r"OD_RANGE:.*?SCLK:\s*(\d+)\s*Mhz\s+(\d+)\s*Mhz", od_text, re.I | re.S)
-    if match:
-      od_min = int(match.group(1))
-      od_max = int(match.group(2))
-  minimum = od_min or (min(levels) if levels else 400)
-  maximum = od_max or (max(levels) if levels else 0)
-  od_path = os.path.join(device, "pp_od_clk_voltage") if device else ""
-  can_apply = bool(_which("ryzenadj") or (od_path and os.path.exists(od_path)))
-  if maximum < 800:
-    if not can_apply:
-      return None
-    minimum, maximum = 400, 2700
+    if match and int(match.group(2)) > 800:
+      maximum = int(match.group(2))
+      low = int(match.group(1))
+      if 200 <= low < maximum:
+        minimum = low
+    elif levels:
+      maximum = max(levels)
   if minimum >= maximum:
-    minimum = max(200, maximum - 100)
-  return {"min": minimum, "max": maximum, "device": device}
+    minimum, maximum = 800, 2700
+  return {"min": minimum, "max": maximum}
 
 def _apply_ryzenadj_gfxclk(mhz):
   tool = _which("ryzenadj")
@@ -380,73 +377,27 @@ def _apply_ryzenadj_gfxclk(mhz):
     return (result.stderr or result.stdout or "ryzenadj failed").strip()
   return ""
 
-def _od_sclk_index(text):
-  block = re.search(r"OD_SCLK:(.*?)(?:OD_|$)", text or "", re.S)
-  if not block:
-    return 1
-  indexes = [int(value) for value in re.findall(r"(?m)^\s*(\d+)\s*:", block.group(1))]
-  return max(indexes) if indexes else 1
-
-def _apply_igpu_od(mhz, reset=False):
+def _release_igpu_manual():
+  """Manual mode pins the Ally iGPU at its 800 MHz floor. Put it back on auto."""
   device = _igpu_device()
   if not device:
-    return "The internal GPU was not found"
-  od = os.path.join(device, "pp_od_clk_voltage")
+    return
   level = os.path.join(device, "power_dpm_force_performance_level")
-  if not os.path.exists(od):
-    return "The internal GPU clock file was not found"
-  if reset or int(mhz) <= 0:
-    errors = []
-    err = _write_text(od, "r")
-    if err:
-      errors.append(err)
-    if os.path.exists(level):
-      err = _write_text(level, "auto")
-      if err:
-        errors.append(err)
-    return "; ".join(errors)
-  if os.path.exists(level):
-    err = _write_text(level, "manual")
-    if err:
-      return err
-  index = _od_sclk_index(_read_text(od))
-  err = _write_text(od, f"s {index} {int(mhz)}")
-  if err:
-    if os.path.exists(level):
-      _write_text(level, "auto")
-    return err
-  err = _write_text(od, "c")
-  if err and os.path.exists(level):
-    _write_text(level, "auto")
-  return err
+  if not os.path.exists(level) or _read_text(level) in ("", "auto"):
+    return
+  _write_text(level, "auto")
+  od = os.path.join(device, "pp_od_clk_voltage")
+  if os.path.exists(od):
+    _write_text(od, "r")
 
 def _apply_igpu_clock(mhz):
   info = _igpu_clock_info()
+  _release_igpu_manual()
   if not info:
-    return "Internal GPU clock control was not found"
+    return "Internal GPU clock control needs ryzenadj."
   reset = int(mhz) <= 0
   target = info["max"] if reset else max(info["min"], min(info["max"], int(mhz)))
-  messages = []
-  ok = False
-  if _which("ryzenadj"):
-    err = _apply_ryzenadj_gfxclk(target)
-    if err:
-      messages.append(err)
-    else:
-      ok = True
-  device = info.get("device") or ""
-  od = os.path.join(device, "pp_od_clk_voltage") if device else ""
-  if od and os.path.exists(od):
-    err = _apply_igpu_od(0 if reset else target, reset=reset)
-    if err:
-      messages.append(err)
-    else:
-      ok = True
-  if ok:
-    return ""
-  if messages:
-    return "; ".join(messages)
-  return "Internal GPU clock control was not found. Install ryzenadj."
+  return _apply_ryzenadj_gfxclk(target)
 
 _last_limit_error = ""
 
@@ -1122,6 +1073,7 @@ class Plugin:
       err = _apply_cpu_clock(cpu_clock)
       if err:
         messages.append(err)
+    _release_igpu_manual()
     if igpu_clock > 0:
       err = _apply_igpu_clock(igpu_clock)
       if err:
@@ -1208,7 +1160,23 @@ class Plugin:
         messages.append(err)
     return "Success" if not messages else "; ".join(messages)
 
+  async def _unlock_stuck_igpu(self):
+    device = _igpu_device()
+    level = _read_text(os.path.join(device, "power_dpm_force_performance_level")) if device else ""
+    saved = self._saved_limit("igpu_clock_mhz")
+    if level not in ("", "auto") and 0 < saved <= 800:
+      Plugin.settings.setSetting("igpu_clock_mhz", 0)
+    if self._saved_limit("igpu_clock_mhz") <= 0:
+      err = _apply_igpu_clock(0)
+      if err:
+        _note_limit_error(err)
+
   async def _keep_limits(self):
+    try:
+      await self._unlock_stuck_igpu()
+      await self.apply_saved_limits()
+    except Exception as exc:
+      _note_limit_error(str(exc))
     while True:
       await asyncio.sleep(5)
       try:
