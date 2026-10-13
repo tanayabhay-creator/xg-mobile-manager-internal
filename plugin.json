@@ -8,6 +8,6 @@
   "python_src": "main.py",
   "publish": {
     "tags": ["eGPU", "NVIDIA", "AMD", "XGMobile", "ROG-Ally", "Flow", "ASUS"],
-    "description": "Manage XG Mobile Ejection, Activation, and NVIDIA Driver Repairs."
+    "description": "Based on Kenny Hood (Kentronix)'s XG Mobile Manager. Adds Play on Internal Screen."
   }
 }

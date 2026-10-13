@@ -11,6 +11,8 @@
 
 ![XG Mobile Manager UI](assets/images/mainUI.png)
 
+This repository is a modification of [XG Mobile Manager](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager) by **Kenny Hood (Kentronix)**. The original plugin, its driver installation, and the eGPU enable and eject design are his work. This copy adds **Play on Internal Screen**, so Game Mode can stay on the ROG Ally's built-in display while games render on the XG Mobile.
+
 A Decky Loader plugin that brings seamless, UI-driven support for the ASUS ROG XG Mobile eGPU ecosystem to Arch-based handhelds (like the ROG Ally running SteamOS , Bazzite or CachyOS).
 
 This plugin manages the complex hardware handshakes, dynamically compiles and intercepts NVIDIA drivers using safe bind-mount architecture on SteamOS, injects Wayland/Vulkan environment variables to make eGPUs work natively inside Steam's Gaming Mode, and provides direct motherboard-level control over the eGPU's power limits and thermals.
@@ -190,7 +192,8 @@ If this tool saved you hours of troubleshooting or finally made your portable eG
 **[(Ko-Fi)](https://ko-fi.com/kentronix)**
 
 ## 🏆 Credits
-* **Development & Architecture:** Kentronix
+* **Original plugin, architecture, and maintenance:** Kenny Hood ([Kentronix](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager))
+* **Play on Internal Screen:** [tanayabhay-creator](https://github.com/tanayabhay-creator/xg-mobile-manager-internal), built on top of that original plugin
 * Protocol reverse engineering: [osy/XG_Mobile_Station](https://github.com/osy/XG_Mobile_Station)
 * asus-linux kernel patches: [asus-linux.org](https://asus-linux.org)
 * Valve for shipping the SteamOS kernel with `asus-wmi` + `egpu_enable`

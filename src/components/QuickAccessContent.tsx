@@ -516,7 +516,12 @@ export const QuickAccessContent = () => {
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ opacity: 0.6, fontSize: "0.8em" }}>
-            Created by Kentronix
+            Original plugin by Kenny Hood (Kentronix)
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ opacity: 0.6, fontSize: "0.8em" }}>
+            Internal screen option by tanayabhay-creator
           </div>
         </PanelSectionRow>
       </PanelSection>
