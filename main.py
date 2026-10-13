@@ -73,7 +73,10 @@ def _which(name):
   if found:
     return found
   fallback = f"/usr/bin/{name}"
-  return fallback if os.path.exists(fallback) else ""
+  if os.path.exists(fallback):
+    return fallback
+  local = f"/usr/local/bin/{name}"
+  return local if os.path.exists(local) else ""
 
 def _as_int(value):
   if isinstance(value, dict):
@@ -344,41 +347,75 @@ def _igpu_device():
     return os.path.join(amd[0]["path"], "device")
   return ""
 
-def _mhz_values(text):
-  return [int(value) for value in re.findall(r"(\d+)\s*Mhz", text or "", re.I)]
+def _sclk_levels(device):
+  levels = []
+  if not device:
+    return levels
+  text = _read_text(os.path.join(device, "pp_dpm_sclk"))
+  for match in re.finditer(r"(?m)^\s*(\d+)\s*:\s*(\d+)\s*Mhz", text or "", re.I):
+    levels.append((int(match.group(1)), int(match.group(2))))
+  return levels
+
+def _igpu_clock_now():
+  device = _igpu_device()
+  if not device:
+    return 0
+  for node in glob.glob(os.path.join(device, "hwmon/hwmon*/freq1_input")):
+    try:
+      value = int(_read_text(node))
+    except Exception:
+      continue
+    if value > 1000000:
+      return int(value / 1000000)
+    if value > 10000:
+      return int(value / 1000)
+    if value > 0:
+      return value
+  text = _read_text(os.path.join(device, "pp_dpm_sclk"))
+  match = re.search(r"(\d+)\s*Mhz\s*\*", text or "", re.I)
+  return int(match.group(1)) if match else 0
 
 def _igpu_clock_info():
-  if not _which("ryzenadj"):
-    return None
   device = _igpu_device()
-  minimum = 800
-  maximum = 2700
+  levels = [mhz for _, mhz in _sclk_levels(device)]
+  minimum = min(levels) if levels else 800
+  maximum = max(levels) if levels else 0
   if device:
-    levels = [value for value in _mhz_values(_read_text(os.path.join(device, "pp_dpm_sclk"))) if value > 800]
     od_text = _read_text(os.path.join(device, "pp_od_clk_voltage"))
     match = re.search(r"OD_RANGE:.*?SCLK:\s*(\d+)\s*Mhz\s+(\d+)\s*Mhz", od_text, re.I | re.S)
-    if match and int(match.group(2)) > 800:
+    if match and int(match.group(2)) > maximum:
       maximum = int(match.group(2))
       low = int(match.group(1))
       if 200 <= low < maximum:
-        minimum = low
-    elif levels:
-      maximum = max(levels)
-  if minimum >= maximum:
-    minimum, maximum = 800, 2700
+        minimum = min(minimum, low)
+  if not _which("ryzenadj") and not levels:
+    return None
+  if maximum <= 800:
+    maximum = 2700
+  if minimum < 200 or minimum >= maximum:
+    minimum = 800
   return {"min": minimum, "max": maximum}
 
-def _apply_ryzenadj_gfxclk(mhz):
+def _apply_ryzenadj_gfxclk(mhz, minimum=None):
   tool = _which("ryzenadj")
   if not tool:
     return "ryzenadj was not found"
+  if minimum is not None:
+    result = _run_cmd([tool, f"--min-gfxclk={int(minimum)}", f"--max-gfxclk={int(mhz)}"])
+    if result.returncode == 0:
+      return ""
+    held_error = (result.stderr or result.stdout or "ryzenadj could not hold the graphics clock").strip()
+  else:
+    held_error = ""
   result = _run_cmd([tool, f"--max-gfxclk={int(mhz)}"])
+  if result.returncode == 0 and minimum is None:
+    return ""
   if result.returncode != 0:
-    return (result.stderr or result.stdout or "ryzenadj failed").strip()
-  return ""
+    return (result.stderr or result.stdout or held_error or "ryzenadj failed").strip()
+  return held_error or "ryzenadj did not set the minimum graphics clock"
 
 def _release_igpu_manual():
-  """Manual mode pins the Ally iGPU at its 800 MHz floor. Put it back on auto."""
+  """Manual mode with no enabled levels pins the Ally iGPU at 800 MHz."""
   device = _igpu_device()
   if not device:
     return
@@ -386,18 +423,67 @@ def _release_igpu_manual():
   if not os.path.exists(level) or _read_text(level) in ("", "auto"):
     return
   _write_text(level, "auto")
-  od = os.path.join(device, "pp_od_clk_voltage")
-  if os.path.exists(od):
-    _write_text(od, "r")
+
+def _apply_igpu_sysfs(mhz, reset=False):
+  device = _igpu_device()
+  if not device:
+    return "The internal GPU was not found"
+  level_path = os.path.join(device, "power_dpm_force_performance_level")
+  sclk_path = os.path.join(device, "pp_dpm_sclk")
+  if reset or int(mhz) <= 0:
+    if os.path.exists(level_path):
+      return _write_text(level_path, "auto")
+    return ""
+  levels = _sclk_levels(device)
+  if not levels or not os.path.exists(level_path) or not os.path.exists(sclk_path):
+    return "The internal GPU clock levels were not found"
+  index, chosen = min(levels, key=lambda item: (abs(item[1] - int(mhz)), -item[1]))
+  if int(mhz) > 900 and chosen <= 900:
+    higher = [item for item in levels if item[1] > 900]
+    if not higher:
+      return "The internal GPU has no clock step above 800 MHz"
+    index, chosen = min(higher, key=lambda item: abs(item[1] - int(mhz)))
+  err = _write_text(level_path, "manual")
+  if err:
+    return err
+  err = _write_text(sclk_path, str(index))
+  if err:
+    _write_text(level_path, "auto")
+  return err
+
+def _igpu_clock_is_held(target):
+  now = _igpu_clock_now()
+  if now <= 0:
+    return True
+  return abs(now - int(target)) <= 200
 
 def _apply_igpu_clock(mhz):
   info = _igpu_clock_info()
   _release_igpu_manual()
   if not info:
-    return "Internal GPU clock control needs ryzenadj."
+    return "Internal GPU clock control was not found."
   reset = int(mhz) <= 0
-  target = info["max"] if reset else max(info["min"], min(info["max"], int(mhz)))
-  return _apply_ryzenadj_gfxclk(target)
+  if reset:
+    messages = []
+    if _which("ryzenadj"):
+      err = _apply_ryzenadj_gfxclk(info["max"], info["min"])
+      if err:
+        messages.append(err)
+    err = _apply_igpu_sysfs(0, reset=True)
+    if err:
+      messages.append(err)
+    return "" if not messages or len(messages) < 2 else "; ".join(messages)
+  target = max(info["min"], min(info["max"], int(mhz)))
+  err = _apply_ryzenadj_gfxclk(target, target) if _which("ryzenadj") else "ryzenadj was not found"
+  if not err:
+    time.sleep(0.25)
+    if _igpu_clock_is_held(target):
+      return ""
+    err = "The graphics clock stayed at its 800 MHz floor."
+  sysfs_err = _apply_igpu_sysfs(target)
+  if not sysfs_err:
+    return ""
+  return f"{err}; {sysfs_err}"
 
 POWER_PRESETS = {
   "quiet": {"gpu_power_ratio": 0.50, "gpu_clock_ratio": 0.65, "cpu_tdp": 13, "cpu_clock": 3200, "igpu_clock": 1400, "gpu_power_fallback": 80},
@@ -1127,6 +1213,7 @@ class Plugin:
       "igpu_clock_min": igpu["min"],
       "igpu_clock_max": igpu["max"],
       "igpu_clock": clamp(saved_igpu_clock or igpu["max"], igpu["min"], igpu["max"]),
+      "igpu_clock_now": _igpu_clock_now(),
     }
 
   def _fill_missing_preset_gpu(self):
@@ -1236,6 +1323,9 @@ class Plugin:
       return err
     Plugin.settings.setSetting("igpu_clock_mhz", mhz)
     return "Success"
+
+  async def get_igpu_live_clock(self):
+    return _igpu_clock_now()
 
   async def reset_power_limits(self):
     for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz", "power_preset"):
