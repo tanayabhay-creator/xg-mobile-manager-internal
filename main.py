@@ -124,6 +124,8 @@ def _apply_nvidia_power(watts):
   info = _nvidia_power_info()
   if info:
     watts = max(info["min"], min(info["max"], int(watts)))
+    if abs(info["current"] - int(watts)) <= 1:
+      return ""
   result = _run_cmd([smi, "-pl", str(int(watts))])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "Failed to set the GPU power limit").strip()
@@ -136,8 +138,12 @@ def _apply_nvidia_clock(mhz):
   if int(mhz) <= 0:
     result = _run_cmd([smi, "-rgc"])
   else:
-    floor = min(500, int(mhz))
-    result = _run_cmd([smi, "-lgc", f"{floor},{int(mhz)}"])
+    # Keep the clock close to the cap. A 500 MHz floor makes frame times jump.
+    cap = int(mhz)
+    floor = max(300, cap - 150)
+    if floor > cap:
+      floor = cap
+    result = _run_cmd([smi, "-lgc", f"{floor},{cap}"])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "Failed to set the GPU clock limit").strip()
   return ""

@@ -415,7 +415,7 @@ export const QuickAccessContent = () => {
           <PanelSectionRow>
             <SliderField
               label="eGPU max clock"
-              description="Caps the XG Mobile graphics clock."
+              description="Holds the XG Mobile near this clock so frame times stay even."
               value={gpuClock}
               min={Number(limits.gpu_clock_min) || 500}
               max={Number(limits.gpu_clock_max) || 2500}

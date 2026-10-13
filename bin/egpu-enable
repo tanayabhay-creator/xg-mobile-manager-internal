@@ -166,7 +166,14 @@ apply_display_config() {
     fi
     if [ "$VENDOR" = "nvidia" ]; then
       echo "PROTON_ENABLE_NVAPI=1"
+      # The XG Mobile should not vsync on its own. Gamescope paces the Ally panel.
+      echo "__GL_SYNC_TO_VBLANK=0"
+      echo "__GL_MaxFramesAllowed=2"
     fi
+    # Variable refresh turns the uneven eGPU frame copy into visible stutter.
+    echo "ADAPTIVE_SYNC="
+    echo "vk_xwayland_wait_ready=true"
+    echo "STEAM_DISPLAY_REFRESH_LIMITS=60,120"
   } > "$display_conf"
   chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
   chmod 644 "$display_conf"
