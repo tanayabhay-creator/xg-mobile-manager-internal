@@ -1,0 +1,90 @@
+#!/bin/bash
+VENDOR=$1
+OS_TYPE=$2
+PRIMARY_USER=$(ps -o user= -C steam | head -n 1 | xargs)
+[ -z "$PRIMARY_USER" ] && PRIMARY_USER="deck"
+
+# Check if the ASUS WMI interface says the eGPU is actually connected
+ACTIVE=$(cat /sys/devices/platform/asus-nb-wmi/egpu_enable 2>/dev/null || echo "0")
+
+if [ "$ACTIVE" -eq 0 ]; then
+    echo "Failsafe triggered: XG Mobile is not physically connected."
+    echo "Disabling sync service to clean up the environment."
+    systemctl disable xgmobile-boot-sync.service 2>/dev/null
+    
+    # Optionally: Clean up the kwin env file here just to be safe
+    rm -f /home/deck/.config/plasma-workspace/env/xgmobile-nvidia-kwin.sh
+    
+    exit 0
+fi
+
+echo "--- Boot DRM Sync Started at $(date) ---"
+
+# Graceful exit for AMD users
+if [ "$VENDOR" == "amd" ]; then
+  echo "AMD eGPU detected. Native amdgpu drivers do not require DRM environment sync."
+  echo "Sync complete (Skipped cleanly)."
+  exit 0
+fi
+
+if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  # Foolproof detection of exact DRM nodes based on hardware vendor ID
+  for card in /sys/class/drm/card*; do
+    case "$(basename "$card")" in
+      card[0-9]|card[0-9][0-9]) ;;
+      *) continue ;;
+    esac
+    HW_VENDOR=$(cat $card/device/vendor 2>/dev/null)
+    if [ "$HW_VENDOR" == "0x10de" ]; then # NVIDIA ID
+      EGPU_CARD="/dev/dri/$(basename $card)"
+    elif [ "$HW_VENDOR" == "0x1002" ] || [ "$HW_VENDOR" == "0x1022" ]; then # AMD IDs
+      IGPU_CARD="/dev/dri/$(basename $card)"
+    fi
+  done
+
+  if [ -z "$EGPU_CARD" ] || [ -z "$IGPU_CARD" ]; then
+    echo "WARNING: Failed to detect both GPUs on the PCIe bus. Sync aborted."
+    exit 1
+  fi
+
+  SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+  PLUGIN_DIR=$(readlink -f "$SCRIPT_DIR/..")
+  HOMEBREW_DIR=$(readlink -f "$PLUGIN_DIR/../..")
+  DATA_DIR="$HOMEBREW_DIR/data/xgmobile-manager"
+  DISPLAY_TARGET="external"
+  if [ -f "$DATA_DIR/display_target" ]; then
+    DISPLAY_TARGET=$(tr -d '[:space:]' < "$DATA_DIR/display_target")
+  fi
+  if [ "$DISPLAY_TARGET" = "internal" ]; then
+    DRM_ORDER="$IGPU_CARD:$EGPU_CARD"
+  else
+    DRM_ORDER="$EGPU_CARD:$IGPU_CARD"
+  fi
+  echo "Boot sync display target: $DISPLAY_TARGET ($DRM_ORDER)"
+
+  # 1. Update the System-Wide Environment
+  steamos-readonly disable 2>/dev/null || true
+  sed -i 's|WLR_DRM_DEVICES=.*|WLR_DRM_DEVICES='$DRM_ORDER'|' /etc/environment
+  steamos-readonly enable 2>/dev/null || true
+
+  # 2. Update the Isolated Plasma Environment
+  PLASMA_ENV_DIR="/home/$PRIMARY_USER/.config/plasma-workspace/env"
+  if [ "$DISPLAY_TARGET" = "internal" ]; then
+    sudo -u $PRIMARY_USER bash -c "cat > '$PLASMA_ENV_DIR/xgmobile-nvidia-kwin.sh' << EOF
+#!/bin/bash
+export KWIN_DRM_DEVICES=$DRM_ORDER
+EOF"
+  else
+    sudo -u $PRIMARY_USER bash -c "cat > '$PLASMA_ENV_DIR/xgmobile-nvidia-kwin.sh' << EOF
+#!/bin/bash
+export KWIN_DRM_DEVICES=$DRM_ORDER
+export GBM_BACKEND=nvidia-drm
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+EOF"
+  fi
+  echo "SteamOS/CachyOS specific DRM environment sync complete."
+else
+  echo "Bazzite OS detected. Skipping."
+fi
+
+echo "Sync complete. Ready for Desktop Mode."

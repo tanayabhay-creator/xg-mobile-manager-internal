@@ -1,0 +1,12 @@
+[Unit]
+Description=XG Mobile DRM Node Sync
+Before=display-manager.service
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/egpu-sync
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

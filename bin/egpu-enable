@@ -1,0 +1,487 @@
+#!/bin/bash
+VENDOR=$1 # Capture 'nvidia' or 'amd' from the plugin
+OS_TYPE=$2
+LOG_DIR=$3
+DATA_DIR=$4
+SUPERGFX_TRIG=0
+#PRIMARY_USER=$(echo "$LOG_DIR" | cut -d/ -f3)
+PRIMARY_USER=$(ps -o user= -C steam | head -n 1 | xargs)
+[ -z "$PRIMARY_USER" ] && PRIMARY_USER="deck"
+mkdir -p "$DATA_DIR/configs"
+exec > "$LOG_DIR/xgmobile_manager_enable_${VENDOR}.log" 2>&1
+
+echo "--- XG Mobile Enable ($VENDOR) Started at $(date) ---"
+
+# external = current behavior, gamescope scans out of the XG Mobile ports.
+# internal = Game Mode stays on the handheld panel; games render on the eGPU.
+resolve_display_target() {
+  local requested="$1" settings_json from_json saved
+  if [ "$requested" = "internal" ] || [ "$requested" = "external" ]; then
+    DISPLAY_TARGET="$requested"
+    return
+  fi
+  if [ -n "$DATA_DIR" ]; then
+    settings_json="$(readlink -f "$DATA_DIR/../../settings/xgmobile-manager/settings.json" 2>/dev/null || true)"
+    if [ -f "$settings_json" ]; then
+      from_json=$(sed -n 's/.*"display_target"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$settings_json" | head -n 1)
+      if [ "$from_json" = "internal" ] || [ "$from_json" = "external" ]; then
+        DISPLAY_TARGET="$from_json"
+        return
+      fi
+    fi
+    if [ -f "$DATA_DIR/display_target" ]; then
+      saved=$(tr -d '[:space:]' < "$DATA_DIR/display_target")
+      if [ "$saved" = "internal" ] || [ "$saved" = "external" ]; then
+        DISPLAY_TARGET="$saved"
+        return
+      fi
+    fi
+  fi
+  DISPLAY_TARGET="external"
+}
+
+fmt_pci_id() {
+  local card_dev="/sys/class/drm/$(basename "$1")/device"
+  local v d
+  [ -f "$card_dev/vendor" ] || return 1
+  v=$(cat "$card_dev/vendor")
+  d=$(cat "$card_dev/device")
+  printf "%04x:%04x" "$((v))" "$((d))"
+}
+
+internal_connector() {
+  local card_base conn node status_file fallback=""
+  card_base=$(basename "$1")
+  for status_file in /sys/class/drm/${card_base}-*/status; do
+    [ -f "$status_file" ] || continue
+    [ "$(tr -d '[:space:]' < "$status_file")" = "connected" ] || continue
+    node=$(basename "$(dirname "$status_file")")
+    conn="${node#${card_base}-}"
+    case "$conn" in
+      eDP*|DSI*|LVDS*)
+        printf "%s" "$conn"
+        return 0
+        ;;
+    esac
+    [ -z "$fallback" ] && fallback="$conn"
+  done
+  if [ -n "$fallback" ]; then
+    printf "%s" "$fallback"
+  else
+    printf "%s" "eDP-1"
+  fi
+}
+
+game_filter_name() {
+  local pci name marketing token
+  pci=$(basename "$(readlink -f "/sys/class/drm/$(basename "$1")/device")")
+  name=$(lspci -s "$pci" 2>/dev/null)
+  if echo "$name" | grep -qiE 'nvidia|geforce'; then
+    printf "%s" "NVIDIA"
+    return 0
+  fi
+  marketing=$(printf "%s" "$name" | sed -n 's/.*\[\([^]]*\)\].*/\1/p')
+  token=$(printf "%s" "$marketing" | grep -oE '[0-9]{3,4}[A-Za-z]*' | head -n 1)
+  if [ -n "$token" ]; then
+    printf "%s" "$token"
+  elif [ -n "$marketing" ]; then
+    printf "%s" "$marketing"
+  fi
+}
+
+pick_icd() {
+  local prefix="$1"
+  local dir="/usr/share/vulkan/icd.d"
+  local found=""
+  if [ -f "$dir/${prefix}.x86_64.json" ]; then
+    found="$dir/${prefix}.x86_64.json"
+  elif [ -f "$dir/${prefix}.json" ]; then
+    found="$dir/${prefix}.json"
+  else
+    found=$(ls "$dir"/${prefix}*.json 2>/dev/null | grep -v i686 | head -n 1)
+  fi
+  printf "%s" "$found"
+}
+
+refresh_gpu_nodes() {
+  local card base vend
+  if [ "$VENDOR" = "nvidia" ]; then
+    for card in /sys/class/drm/card*; do
+      [ -e "$card/device/vendor" ] || continue
+      base=$(basename "$card")
+      [[ "$base" =~ ^card[0-9]+$ ]] || continue
+      vend=$(tr -d '[:space:]' < "$card/device/vendor")
+      if [ "$vend" = "0x10de" ]; then
+        EGPU_CARD="/dev/dri/$base"
+      elif [ "$vend" = "0x1002" ] || [ "$vend" = "0x1022" ]; then
+        IGPU_CARD="/dev/dri/$base"
+      fi
+    done
+  fi
+  if [ -n "$EGPU_CARD" ] && [ -e "$EGPU_CARD" ]; then
+    setfacl -m "u:$PRIMARY_USER:rw" "$EGPU_CARD" 2>/dev/null || true
+  fi
+  if [ -e /dev/nvidiactl ]; then
+    setfacl -m "u:$PRIMARY_USER:rw" /dev/nvidia* 2>/dev/null || true
+  fi
+  setfacl -m "u:$PRIMARY_USER:rw" /dev/dri/renderD* 2>/dev/null || true
+}
+
+collect_display_facts() {
+  refresh_gpu_nodes
+  if [ "$DISPLAY_TARGET" = "internal" ] && [ ! -e "${IGPU_CARD:-/missing}" ]; then
+    echo "WARNING: Internal screen was requested, but the handheld GPU was not found. Using the XG Mobile display."
+    DISPLAY_TARGET="external"
+  fi
+  if [ "$DISPLAY_TARGET" = "internal" ]; then
+    IGPU_PCI=$(fmt_pci_id "$IGPU_CARD")
+    OUTPUT_CONN=$(internal_connector "$IGPU_CARD")
+    GAME_FILTER=$(game_filter_name "$EGPU_CARD")
+    echo "Internal screen: scanout $IGPU_CARD ($IGPU_PCI) via $OUTPUT_CONN, games filtered to '$GAME_FILTER'."
+  fi
+}
+
+apply_display_config() {
+  local display_conf="/home/$PRIMARY_USER/.config/environment.d/10-xgmobile-display.conf"
+  collect_display_facts
+  mkdir -p "$DATA_DIR"
+  printf "%s\n" "$DISPLAY_TARGET" > "$DATA_DIR/display_target"
+
+  if [ "$DISPLAY_TARGET" != "internal" ]; then
+    rm -f "$display_conf"
+    echo "Display target: monitor connected to the XG Mobile."
+    return
+  fi
+
+  mkdir -p "$(dirname "$display_conf")"
+  {
+    echo "# XG Mobile Manager: games render on the eGPU, Game Mode scans out on the handheld panel."
+    printf 'OUTPUT_CONNECTOR=%q\n' "$OUTPUT_CONN"
+    if [ -n "$IGPU_PCI" ]; then
+      printf 'VULKAN_ADAPTER=%q\n' "$IGPU_PCI"
+    fi
+    if [ -n "$GAME_FILTER" ]; then
+      printf 'DXVK_FILTER_DEVICE_NAME=%q\n' "$GAME_FILTER"
+      printf 'VKD3D_FILTER_DEVICE_NAME=%q\n' "$GAME_FILTER"
+    fi
+    if [ "$VENDOR" = "nvidia" ]; then
+      echo "PROTON_ENABLE_NVAPI=1"
+    fi
+  } > "$display_conf"
+  chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
+  chmod 644 "$display_conf"
+  echo "Wrote Game Mode internal-screen config to $display_conf"
+}
+
+write_steamos_session_env() {
+  local line
+  collect_display_facts
+  echo "Writing Game Mode display environment ($DISPLAY_TARGET)..."
+  touch /etc/environment
+  sed -i \
+    -e '/MESA_VK_DEVICE_SELECT/d' \
+    -e '/VK_ICD_FILENAMES/d' \
+    -e '/WLR_DRM_DEVICES/d' \
+    -e '/VK_LOADER_LAYERS_DISABLE/d' \
+    -e '/GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT/d' \
+    -e '/DXVK_FILTER_DEVICE_NAME/d' \
+    -e '/VKD3D_FILTER_DEVICE_NAME/d' \
+    -e '/VULKAN_ADAPTER/d' \
+    -e '/OUTPUT_CONNECTOR/d' \
+    -e '/PROTON_ENABLE_NVAPI/d' \
+    /etc/environment
+
+  ENV_LINES=()
+  if [ "$DISPLAY_TARGET" = "internal" ]; then
+    ENV_LINES+=("WLR_DRM_DEVICES=$IGPU_CARD:$EGPU_CARD")
+    [ -n "$IGPU_PCI" ] && ENV_LINES+=("VULKAN_ADAPTER=$IGPU_PCI")
+    [ -n "$OUTPUT_CONN" ] && ENV_LINES+=("OUTPUT_CONNECTOR=$OUTPUT_CONN")
+    if [ -n "$GAME_FILTER" ]; then
+      ENV_LINES+=("DXVK_FILTER_DEVICE_NAME=$GAME_FILTER")
+      ENV_LINES+=("VKD3D_FILTER_DEVICE_NAME=$GAME_FILTER")
+    fi
+    if [ "$VENDOR" = "nvidia" ]; then
+      ENV_LINES+=("PROTON_ENABLE_NVAPI=1")
+      if [ -n "$AMD_ICD" ] && [ -n "$NV_ICD" ]; then
+        ENV_LINES+=("VK_ICD_FILENAMES=$AMD_ICD:$NV_ICD")
+      else
+        echo "WARNING: Could not find both Vulkan ICDs. Leaving loader discovery alone so the internal panel can still start."
+      fi
+    fi
+  elif [ "$VENDOR" = "nvidia" ]; then
+    ENV_LINES+=("MESA_VK_DEVICE_SELECT=$NVIDIA_ID")
+    ENV_LINES+=("VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json")
+    ENV_LINES+=("WLR_DRM_DEVICES=$EGPU_CARD:$IGPU_CARD")
+    ENV_LINES+=("VK_LOADER_LAYERS_DISABLE=*")
+    ENV_LINES+=("GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT=1")
+  else
+    ENV_LINES+=("WLR_DRM_DEVICES=$EGPU_CARD:$IGPU_CARD")
+  fi
+
+  systemctl unset-environment MESA_VK_DEVICE_SELECT VK_ICD_FILENAMES WLR_DRM_DEVICES VK_LOADER_LAYERS_DISABLE GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT DXVK_FILTER_DEVICE_NAME VKD3D_FILTER_DEVICE_NAME VULKAN_ADAPTER OUTPUT_CONNECTOR PROTON_ENABLE_NVAPI || true
+  USER_UID=$(id -u "$PRIMARY_USER")
+  export DECK_BUS="XDG_RUNTIME_DIR=/run/user/$USER_UID"
+  sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment MESA_VK_DEVICE_SELECT VK_ICD_FILENAMES WLR_DRM_DEVICES VK_LOADER_LAYERS_DISABLE GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT DXVK_FILTER_DEVICE_NAME VKD3D_FILTER_DEVICE_NAME VULKAN_ADAPTER OUTPUT_CONNECTOR PROTON_ENABLE_NVAPI || true
+
+  for line in "${ENV_LINES[@]}"; do
+    echo "$line" >> /etc/environment
+    systemctl set-environment "$line"
+    sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment "$line" || true
+  done
+}
+
+resolve_display_target "$5"
+echo "Display target: $DISPLAY_TARGET"
+
+# Hardware Lock Check
+CONNECTED=$(cat /sys/devices/platform/asus-nb-wmi/egpu_connected || echo "0")
+if [ "$CONNECTED" -eq 0 ]; then
+  echo "ERROR: XG Mobile not locked."
+  exit 1
+fi
+
+if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]];  then
+  # check if its NVIDIA and if so, check for drivers before continuing
+  if [ "$VENDOR" == "nvidia" ]; then
+    # Check if the kernel module is actually loadable
+    if ! modinfo nvidia >/dev/null 2>&1; then
+      echo "ERROR: NVIDIA Driver is not installed. Please run the Install NVIDIA drivers button, or select AMD."
+      exit 2
+    fi
+    if [ ! -f "$DATA_DIR/configs_backup/nvidia_icd.json" ] && [ ! -f "/usr/share/vulkan/icd.d/nvidia_icd.json" ]; then
+      if [ -f "/home/deck/xgmobile_configs_backup/nvidia_icd.json" ]; then
+        echo "CRITICAL ERROR: NVIDIA Vulkan configs detected in old folder location due to v0.2.0 migration."
+        echo "Please use the 'Install NVIDIA Drivers' button in the plugin to regenerate them."
+        exit 3
+      else
+        echo "CRITICAL ERROR: NVIDIA Vulkan configs missing due to v0.2.0 migration."
+        echo "Please use the 'Install NVIDIA Drivers' button in the plugin to regenerate them."
+        exit 4
+      fi
+    fi
+  fi
+
+  # SELF-HEALING BLOCK (Replaces repair-services)
+  echo "Verifying system services..."
+  REPO_ROOT=$(readlink -f "$(dirname "$(readlink -f "$0")")/..")
+  NEEDS_REPAIR=0
+
+  # Check if global commands are missing
+  [ ! -L /usr/local/bin/egpu-enable ] && NEEDS_REPAIR=1
+
+  # Check if NVIDIA services/sleep scripts are missing
+  if [ "$VENDOR" == "nvidia" ]; then
+    [ ! -f /etc/systemd/system/nvidia-suspend.service ] && NEEDS_REPAIR=1
+  fi
+
+  if [ "$NEEDS_REPAIR" -eq 1 ]; then
+    echo "System files missing. Initiating self-repair..."
+    steamos-readonly disable
+  
+    # Restore global terminal commands
+    ln -sf "$REPO_ROOT/bin/egpu-enable" /usr/local/bin/egpu-enable
+    ln -sf "$REPO_ROOT/bin/egpu-eject" /usr/local/bin/egpu-eject
+    ln -sf "$REPO_ROOT/bin/egpu-sync" /usr/local/bin/egpu-sync
+    chmod +x "$REPO_ROOT/bin/egpu-enable" "$REPO_ROOT/bin/egpu-eject" "$REPO_ROOT/bin/egpu-sync"
+  
+    # Copy background services
+    cp "$REPO_ROOT/assets/services/"*.service /etc/systemd/system/ 2>/dev/null || true
+    systemctl enable xgmobile-boot-sync.service
+
+    if [ "$VENDOR" == "nvidia" ]; then
+      echo "Restoring NVIDIA sleep services..."
+      systemctl daemon-reload
+      systemctl enable nvidia-persistenced nvidia-powerd nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service 2>/dev/null
+      systemctl start nvidia-persistenced 2>/dev/null
+    else
+      systemctl daemon-reload
+    fi
+    steamos-readonly enable
+    echo "Self-repair complete."
+  fi
+fi
+
+if [ -L /usr/lib/systemd/system-sleep/egpu-resume-fix ] || [ -f /usr/lib/systemd/system-sleep/egpu-resume-fix ]; then
+  echo "Purging obsolete legacy egpu-resume-fix..."
+  steamos-readonly disable
+  rm -f /usr/lib/systemd/system-sleep/egpu-resume-fix
+  rm -f /etc/systemd/system/egpu-resume-fix.service
+  rm -f /etc/systemd/system/egpu-boot-guardian.service
+  steamos-readonly enable
+fi
+
+if systemctl is-active --quiet supergfxd.service; then 
+  echo "Supergfxd Detected. Stopping supergfxd to avoid panic during switch..."
+  systemctl stop supergfxd.service 2>/dev/null || true
+  SUPERGFX_TRIG=1
+fi
+
+# Used for all OSes for consistency
+# Hardware Activation
+EXISTING_CARDS=$(ls /dev/dri/card* 2>/dev/null)
+IGPU_CARD=$(echo "$EXISTING_CARDS" | head -n 1)
+ENABLE_PATH="/sys/devices/platform/asus-nb-wmi/egpu_enable"
+if [ "$(cat $ENABLE_PATH)" -eq 0 ]; then
+  echo 1 > "$ENABLE_PATH" || true
+fi
+echo 1 > /sys/bus/pci/rescan
+
+sleep 2
+
+if [[ "$OS_TYPE" == *"bazzite"* ]]; then
+  if [ "$VENDOR" == "nvidia" ]; then
+    echo "Loading NVIDIA drivers into kernel to generate DRM nodes..."
+    systemctl enable nvidia-persistenced nvidia-powerd 2>/dev/null
+    systemctl start nvidia-persistenced nvidia-powerd 2>/dev/null
+    modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia 2>/dev/null || true
+    modprobe nvidia_drm modeset=1 fbdev=1
+    modprobe nvidia_modeset nvidia_uvm nvidia
+  fi
+fi
+
+# Wait for Hardware
+COUNT=0
+EGPU_CARD=""
+while [ -z "$EGPU_CARD" ] && [ $COUNT -lt 15 ]; do
+  echo "Waiting for eGPU card... ($COUNT)"
+  CURRENT_CARDS=$(ls /dev/dri/card* 2>/dev/null)
+  for card in $CURRENT_CARDS; do
+    if ! echo "$EXISTING_CARDS" | grep -q "$card"; then
+      EGPU_CARD=$card
+      break
+    fi
+  done
+  [ -n "$EGPU_CARD" ] && break
+  sleep 1
+  ((COUNT++))
+done
+
+if [ -z "$EGPU_CARD" ]; then
+  echo "ERROR: Hardware failed to appear in /dev/dri/"
+  exit 5
+fi
+echo "Success! eGPU dynamically detected as: $EGPU_CARD"
+# Permissions (The ACL Hero)
+#echo "Setting user permissions for eGPU..."
+echo "Setting permissions for user: $PRIMARY_USER"
+setfacl -m u:$PRIMARY_USER:rw $EGPU_CARD
+setfacl -m u:$PRIMARY_USER:rw /dev/dri/renderD*
+
+if [ -e /dev/nvidiactl ]; then
+  echo "Granting NVIDIA node permissions for overlay..."
+  setfacl -m "u:$PRIMARY_USER:rw" /dev/nvidia*
+fi
+
+#if [[ "$OS_TYPE" == *"bazzite"* ]]; then
+#  echo "Applying Bazzite overlay environment fixes..."
+#  USER_UID=$(id -u $PRIMARY_USER)
+#  export DECK_BUS="XDG_RUNTIME_DIR=/run/user/$USER_UID"
+#  
+#  systemctl set-environment GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT=1
+#  sudo -u $PRIMARY_USER $DECK_BUS systemctl --user set-environment GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT=1
+#fi
+  # STOP UI
+# We must stop sddm so we can unload the driver modules
+echo "Stopping SDDM..."
+systemctl stop sddm
+
+ 
+if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+# DRIVER RELOAD 
+  if [ "$VENDOR" == "nvidia" ]; then
+    echo "Detecting NVIDIA Hardware ID..."
+    NVIDIA_ID=$(lspci -n -d 10de: | head -n 1 | awk '{print $3}')
+  
+    if [ -z "$NVIDIA_ID" ]; then
+      echo "ERROR: Could not detect an NVIDIA GPU ID on the PCIe bus. Aborting."
+      exit 6
+    fi
+    echo "Dynamic Hardware Lock: $NVIDIA_ID"
+
+    echo "Re-fanging NVIDIA configs for active session..."
+    steamos-readonly disable
+    mv $DATA_DIR/configs_backup/10_nvidia* /usr/share/glvnd/egl_vendor.d/ 2>/dev/null || true
+    mv $DATA_DIR/configs_backup/*icd* /usr/share/vulkan/icd.d/ 2>/dev/null || true
+    mv $DATA_DIR/configs_backup/*layer* /usr/share/vulkan/implicit_layer.d/ 2>/dev/null || true
+    mv $DATA_DIR/configs_backup/*layer* /usr/share/vulkan/explicit_layer.d/ 2>/dev/null || true
+    mv $DATA_DIR/configs_backup/10-nvidia* /usr/share/X11/xorg.conf.d/ 2>/dev/null || true
+    steamos-readonly enable
+
+    # This is what forces the NVIDIA card into Wayland mode
+    echo "Loading NVIDIA modules..."
+    modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia
+    modprobe nvidia_drm modeset=1 fbdev=1
+    modprobe nvidia_modeset nvidia_uvm nvidia
+
+    # PERSISTENT DRIVER SETTINGS
+    # We write the modeset to a config file so the kernel loads it at boot
+    echo "Setting NVIDIA config file for persistence on reboot..."
+    echo "options nvidia_drm modeset=1 fbdev=1" > /etc/modprobe.d/nvidia-egpu.conf
+
+    AMD_ICD=""
+    NV_ICD=""
+    if [ "$DISPLAY_TARGET" = "internal" ]; then
+      AMD_ICD=$(pick_icd radeon_icd)
+      NV_ICD=$(pick_icd nvidia_icd)
+      echo "Internal-screen Vulkan ICDs: AMD=${AMD_ICD:-missing} NVIDIA=${NV_ICD:-missing}"
+    fi
+    write_steamos_session_env
+
+    echo "Creating isolated KDE Plasma environment config..."
+    PLASMA_ENV_DIR="/home/$PRIMARY_USER/.config/plasma-workspace/env"
+    sudo -u $PRIMARY_USER mkdir -p "$PLASMA_ENV_DIR"
+    if [ "$DISPLAY_TARGET" = "internal" ]; then
+      sudo -u $PRIMARY_USER bash -c "cat > '$PLASMA_ENV_DIR/xgmobile-nvidia-kwin.sh' << EOF
+#!/bin/bash
+export KWIN_DRM_DEVICES=$IGPU_CARD:$EGPU_CARD
+EOF"
+    else
+      sudo -u $PRIMARY_USER bash -c "cat > '$PLASMA_ENV_DIR/xgmobile-nvidia-kwin.sh' << EOF
+#!/bin/bash
+export KWIN_DRM_DEVICES=$EGPU_CARD:$IGPU_CARD
+export GBM_BACKEND=nvidia-drm
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+EOF"
+    fi
+    chmod +x "$PLASMA_ENV_DIR/xgmobile-nvidia-kwin.sh"
+
+    # Final Reload & Start
+    echo "Daemon-reload and start SDDM..."
+    systemctl daemon-reload
+    sudo -u $PRIMARY_USER $DECK_BUS systemctl --user daemon-reload
+
+  elif [ "$VENDOR" == "amd" ]; then
+    echo "AMD Vendor detected. Applying display target..."
+    write_steamos_session_env
+  fi
+fi
+apply_display_config
+echo "Refreshing DRM session..."
+systemctl start sddm #--no-block
+
+#if [ $SUPERGFX_TRIG == 1 ]; then
+#  echo "Restarting supergfxctl..."
+#  systemctl restart supergfxd.service 2>/dev/null || true
+#fi
+#This was too destructive for Flow Laptops
+#if command -v supergfxctl >/dev/null 2>&1; then #[[ "$OS_TYPE" == *"bazzite"* || "$OS_TYPE" == "cachyos" ]]; then
+#  echo "Supergfxctl Detected. Disabling so it does not interupt our boot..."
+#  systemctl disable supergfxd.service 2>/dev/null || true
+#fi
+
+PRODUCT_NAME=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "Unknown")
+
+if command -v supergfxctl >/dev/null 2>&1; then
+  if [[ "$PRODUCT_NAME" == *"RC71L"* || "$PRODUCT_NAME" == *"Ally"* ]]; then
+    echo "Handheld Detected ($PRODUCT_NAME). Disabling supergfxd to prevent interference..."
+    systemctl disable supergfxd.service 2>/dev/null || true
+  elif [[ "$PRODUCT_NAME" == *"Flow"* || "$PRODUCT_NAME" == *"GV"* || "$PRODUCT_NAME" == *"GZ"* ]]; then
+    echo "Flow Laptop Detected ($PRODUCT_NAME). Leaving supergfxd active for MUX control..."
+    # You can add supergfxctl restart logic here if Flow laptops require it after the WMI switch
+  else
+    echo "Unknown ASUS device ($PRODUCT_NAME). Leaving supergfxd alone."
+  fi
+fi
+
+echo "--- Enable Finished at $(date): Time for God Mode ---"
+sudo ln -sf "$LOG_DIR/xgmobile_manager_enable_${VENDOR}.log" $LOG_DIR/xgmobile_manager_enable_latest.log

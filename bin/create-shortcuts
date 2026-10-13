@@ -1,0 +1,74 @@
+#!/bin/bash
+VENDOR=$1
+OS_TYPE=$2
+LOG_DIR=$3
+DATA_DIR=$4
+PRIMARY_USER=$(ps -o user= -C steam | head -n 1 | xargs)
+[ -z "$PRIMARY_USER" ] && PRIMARY_USER="deck"
+DESKTOP_DIR="/home/$PRIMARY_USER/Desktop"
+
+if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]];  then
+  # check if its NVIDIA and if so, check for drivers before continuing
+  if [ "$VENDOR" == "nvidia" ]; then
+    # Check if the kernel module is actually loadable
+    if ! modinfo nvidia >/dev/null 2>&1; then
+      echo "ERROR: NVIDIA Driver is not installed. Please run the Install NVIDIA drivers button, or select AMD."
+      exit 2
+    fi
+  fi
+fi
+
+# Dynamically find the plugin's root directory regardless of OS
+PLUGIN_DIR=$(readlink -f "$(dirname "$(readlink -f "$0")")/..")
+
+echo "Creating shortcuts for user: $PRIMARY_USER in $DESKTOP_DIR"
+mkdir -p "$DESKTOP_DIR"
+
+# 1. Grant passwordless sudo for the EXACT plugin paths
+if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  steamos-readonly disable 2>/dev/null || true
+fi
+
+echo "Cleaning up old desktop shortcuts"
+rm -f /etc/sudoers.d/xgmobile-manager
+rm -f "$DESKTOP_DIR/Enable XG Mobile.desktop"
+rm -f "$DESKTOP_DIR/Eject XG Mobile.desktop"
+
+echo "$PRIMARY_USER ALL=(root) NOPASSWD: $PLUGIN_DIR/bin/egpu-enable, $PLUGIN_DIR/bin/egpu-eject" > /etc/sudoers.d/xgmobile-manager
+chmod 0440 /etc/sudoers.d/xgmobile-manager
+
+# 2. Generate the Enable Icon
+cat > "$DESKTOP_DIR/Enable XG Mobile.desktop" << EOF
+[Desktop Entry]
+Name=Enable XG Mobile ($VENDOR)
+Comment=Activates the eGPU and restarts the display
+Exec=konsole -e bash -c "sudo $PLUGIN_DIR/bin/egpu-enable $VENDOR $OS_TYPE $LOG_DIR $DATA_DIR; sleep 3"
+Icon=video-display
+Terminal=false
+Type=Application
+Categories=Utility;
+EOF
+
+# 3. Generate the Eject Icon
+cat > "$DESKTOP_DIR/Eject XG Mobile.desktop" << EOF
+[Desktop Entry]
+Name=Eject XG Mobile ($VENDOR)
+Comment=Safely disconnects the eGPU
+Exec=bash -c "touch /tmp/xgmobile_eject_request"
+Icon=drive-removable-media
+Terminal=false
+Type=Application
+Categories=Utility;
+EOF
+
+# 4. Fix permissions so they appear as executable icons
+chmod +x "$DESKTOP_DIR/Enable XG Mobile.desktop"
+chmod +x "$DESKTOP_DIR/Eject XG Mobile.desktop"
+chown $PRIMARY_USER:$PRIMARY_USER "$DESKTOP_DIR/Enable XG Mobile.desktop"
+chown $PRIMARY_USER:$PRIMARY_USER "$DESKTOP_DIR/Eject XG Mobile.desktop"
+
+if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  steamos-readonly enable 2>/dev/null || true
+fi
+
+echo "Desktop shortcuts created successfully."
