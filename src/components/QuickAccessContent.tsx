@@ -357,32 +357,27 @@ export const QuickAccessContent = () => {
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
-            Active Power Profile. This motherboard mode does not cap GPU or CPU watts. Use Power and Clocks below to lower temperatures.
+            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power without the uncapped temperatures.
           </div>
-          {powerProfile === "Error" || powerProfile === "Unknown" ? (
-            <div style={{ color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }}>
-              Unable to read motherboard WMI policy.
-            </div>
-          ) : (
-            <Dropdown
-              selectedOption={powerProfile}
-              rgOptions={[
-                { data: "Quiet", label: "Quiet" },
-                { data: "Balanced", label: "Balanced" },
-                { data: "Performance", label: "Performance" }
-              ]}
-              onChange={async (option: any) => {
-                const newProfile = option.data;
-                setPowerProfile(newProfile);
-                const result = await call("set_power_profile", newProfile) as string;
-                toaster.toast({
-                  title: "ASUS Profile",
-                  body: result === "Success" ? `Set to ${newProfile}` : String(result),
-                  duration: 5000
-                });
-              }}
-            />
-          )}
+          <Dropdown
+            selectedOption={powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? powerProfile : "Balanced"}
+            rgOptions={[
+              { data: "Quiet", label: "Quiet" },
+              { data: "Balanced", label: "Balanced" },
+              { data: "Performance", label: "Performance" }
+            ]}
+            onChange={async (option: any) => {
+              const newProfile = option.data;
+              setPowerProfile(newProfile);
+              const result = await call("set_power_profile", newProfile) as string;
+              toaster.toast({
+                title: newProfile,
+                body: String(result),
+                duration: 5000
+              });
+              await loadLimits();
+            }}
+          />
         </PanelSectionRow>
       </PanelSection>
 
@@ -395,7 +390,7 @@ export const QuickAccessContent = () => {
         {limits && !limits.gpu_ready && (
           <PanelSectionRow>
             <div style={{ fontSize: "13px", opacity: 0.8 }}>
-              Enable the XG Mobile to cap its power and clocks. The GPU running at 86°C is its default power limit, not the profile above.
+              Enable the XG Mobile to cap its power and clocks. A preset selected above is saved and applied when the eGPU is on.
             </div>
           </PanelSectionRow>
         )}
@@ -518,6 +513,8 @@ export const QuickAccessContent = () => {
                 title: "Power limits",
                 body: result === "Success" ? "Limits cleared" : String(result)
               });
+              const prof = await call("get_power_profile") as string;
+              if (prof) setPowerProfile(prof);
               await loadLimits();
             }}
           >

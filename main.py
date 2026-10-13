@@ -399,6 +399,76 @@ def _apply_igpu_clock(mhz):
   target = info["max"] if reset else max(info["min"], min(info["max"], int(mhz)))
   return _apply_ryzenadj_gfxclk(target)
 
+POWER_PRESETS = {
+  "quiet": {"gpu_power_ratio": 0.50, "gpu_clock_ratio": 0.65, "cpu_tdp": 13, "cpu_clock": 3200, "igpu_clock": 1400, "gpu_power_fallback": 80},
+  "balanced": {"gpu_power_ratio": 0.68, "gpu_clock_ratio": 0.82, "cpu_tdp": 18, "cpu_clock": 3800, "igpu_clock": 1800, "gpu_power_fallback": 110},
+  "performance": {"gpu_power_ratio": 0.82, "gpu_clock_ratio": 1.0, "cpu_tdp": 25, "cpu_clock": 4600, "igpu_clock": 2400, "gpu_power_fallback": 140},
+}
+
+def _clamp_step(value, low, high, step):
+  value = int(round(float(value)))
+  low = int(low)
+  high = int(high)
+  value = max(low, min(high, value))
+  if step > 1:
+    value = int(round(value / float(step)) * step)
+    value = max(low, min(high, value))
+  return value
+
+def _preset_name(profile):
+  text = str(profile or "").strip().lower()
+  for name in ("performance", "balanced", "quiet"):
+    if name in text:
+      return name
+  return ""
+
+def _preset_targets(name, source=None):
+  spec = POWER_PRESETS.get(name)
+  if not spec:
+    return {}
+  if source is None:
+    source = _gpu_limit_source()
+  targets = {}
+  power = source.get("power") if source else None
+  if power:
+    targets["gpu_power_watts"] = _clamp_step(power["max"] * spec["gpu_power_ratio"], power["min"], power["max"], 5)
+  else:
+    targets["gpu_power_watts"] = spec["gpu_power_fallback"]
+  clock = source.get("clock") if source else None
+  if source and source.get("kind") == "nvidia" and clock:
+    targets["gpu_clock_mhz"] = _clamp_step(clock["max"] * spec["gpu_clock_ratio"], clock["min"], clock["max"], 50)
+  cpu_min, cpu_max, _, cpu_ok = _cpu_tdp_bounds()
+  if cpu_ok:
+    targets["cpu_tdp_watts"] = _clamp_step(spec["cpu_tdp"], cpu_min, cpu_max, 1)
+  clocks = _cpu_clock_info()
+  if clocks:
+    targets["cpu_clock_mhz"] = _clamp_step(spec["cpu_clock"], clocks["min"], clocks["max"], 100)
+  igpu = _igpu_clock_info()
+  if igpu:
+    targets["igpu_clock_mhz"] = _clamp_step(spec["igpu_clock"], igpu["min"], igpu["max"], 50)
+  return targets
+
+def _apply_preset_value(key, value, source):
+  if key == "gpu_power_watts":
+    if not source or source.get("kind") == "none":
+      return ""
+    if source["kind"] == "nvidia":
+      return _apply_nvidia_power(value)
+    if source["kind"] == "amd":
+      return _apply_amd_power(value)
+    return ""
+  if key == "gpu_clock_mhz":
+    if not source or source.get("kind") != "nvidia":
+      return ""
+    return _apply_nvidia_clock(value)
+  if key == "cpu_tdp_watts":
+    return _apply_cpu_tdp(value)
+  if key == "cpu_clock_mhz":
+    return _apply_cpu_clock(value)
+  if key == "igpu_clock_mhz":
+    return _apply_igpu_clock(value)
+  return ""
+
 _last_limit_error = ""
 
 def _note_limit_error(message):
@@ -927,6 +997,13 @@ class Plugin:
 
   async def get_power_profile(self):
     try:
+      if getattr(Plugin, "settings", None):
+        saved = _preset_name(Plugin.settings.getSetting("power_preset", ""))
+        if saved:
+          return saved.title()
+    except Exception:
+      pass
+    try:
       policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
       if not os.path.exists(policy_path):
         return "Unknown"
@@ -950,48 +1027,56 @@ class Plugin:
   async def set_power_profile(self, profile: str):
     if isinstance(profile, dict):
       profile = profile.get("profile", "")
-    clean_profile = str(profile).strip().lower()
-    log(f"WMI PROFILE RECEIVED FROM UI: '{clean_profile}'")
-    
-    val_to_write = "0"
-    platform_name = "balanced"
-    if "balanced" in clean_profile:
-      val_to_write = "0"
-      platform_name = "balanced"
-    elif "performance" in clean_profile:
-      val_to_write = "1"
-      platform_name = "performance"
-    elif "quiet" in clean_profile:
-      val_to_write = "2"
-      platform_name = "quiet"
+    name = _preset_name(profile)
+    if not name:
+      return "Choose Quiet, Balanced, or Performance."
+    log(f"Applying power preset: {name}")
 
-    wrote = False
-    errors = []
+    wmi = {"quiet": ("2", "quiet"), "balanced": ("0", "balanced"), "performance": ("1", "performance")}
+    val_to_write, platform_name = wmi[name]
     policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
     if os.path.exists(policy_path):
-      err = _write_text(policy_path, val_to_write)
-      if err:
-        errors.append(err)
-      else:
-        wrote = True
-
+      _write_text(policy_path, val_to_write)
     profile_path = "/sys/firmware/acpi/platform_profile"
     choices = _read_text(profile_path + "_choices").split()
     desired = platform_name
     if desired not in choices and desired == "quiet" and "low-power" in choices:
       desired = "low-power"
     if os.path.exists(profile_path) and desired in choices:
-      err = _write_text(profile_path, desired)
-      if err:
-        errors.append(err)
-      else:
-        wrote = True
+      _write_text(profile_path, desired)
 
-    if wrote:
-      return "Success"
-    if errors:
-      return "The power profile did not change. Use the watt and clock sliders. " + errors[0]
-    return "The power profile did not change. Use the watt and clock sliders."
+    source = _gpu_limit_source()
+    targets = _preset_targets(name, source)
+    applied = {}
+    messages = []
+    for key, value in targets.items():
+      err = _apply_preset_value(key, value, source)
+      if err:
+        messages.append(err)
+        continue
+      Plugin.settings.setSetting(key, int(value))
+      applied[key] = int(value)
+    Plugin.settings.setSetting("power_preset", name)
+
+    parts = []
+    if "gpu_power_watts" in applied:
+      parts.append(f"GPU {applied['gpu_power_watts']}W")
+    if "gpu_clock_mhz" in applied:
+      parts.append(f"GPU {applied['gpu_clock_mhz']} MHz")
+    if "cpu_tdp_watts" in applied:
+      parts.append(f"CPU {applied['cpu_tdp_watts']}W")
+    if "cpu_clock_mhz" in applied:
+      parts.append(f"CPU {applied['cpu_clock_mhz']} MHz")
+    if "igpu_clock_mhz" in applied:
+      parts.append(f"iGPU {applied['igpu_clock_mhz']} MHz")
+    if not parts:
+      return "Could not find CPU or GPU limits to set."
+    summary = f"{name.title()} set. " + ", ".join(parts) + "."
+    if source.get("kind") == "none":
+      summary += " The XG Mobile cap applies after you enable it."
+    if messages:
+      summary += " " + "; ".join(messages)
+    return summary
 
   def _saved_limit(self, key):
     try:
@@ -1044,7 +1129,30 @@ class Plugin:
       "igpu_clock": clamp(saved_igpu_clock or igpu["max"], igpu["min"], igpu["max"]),
     }
 
+  def _fill_missing_preset_gpu(self):
+    try:
+      if not getattr(Plugin, "settings", None):
+        return
+      name = _preset_name(Plugin.settings.getSetting("power_preset", ""))
+    except Exception:
+      return
+    if not name:
+      return
+    need_power = self._saved_limit("gpu_power_watts") <= 0
+    need_clock = self._saved_limit("gpu_clock_mhz") <= 0
+    if not need_power and not need_clock:
+      return
+    source = _gpu_limit_source()
+    if source.get("kind") == "none":
+      return
+    targets = _preset_targets(name, source)
+    if need_power and targets.get("gpu_power_watts"):
+      Plugin.settings.setSetting("gpu_power_watts", int(targets["gpu_power_watts"]))
+    if need_clock and targets.get("gpu_clock_mhz"):
+      Plugin.settings.setSetting("gpu_clock_mhz", int(targets["gpu_clock_mhz"]))
+
   async def apply_saved_limits(self):
+    self._fill_missing_preset_gpu()
     messages = []
     gpu_power = self._saved_limit("gpu_power_watts")
     gpu_clock = self._saved_limit("gpu_clock_mhz")
@@ -1130,8 +1238,8 @@ class Plugin:
     return "Success"
 
   async def reset_power_limits(self):
-    for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz"):
-      Plugin.settings.setSetting(key, 0)
+    for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz", "power_preset"):
+      Plugin.settings.setSetting(key, 0 if key != "power_preset" else "")
     messages = []
     source = _gpu_limit_source()
     if source["kind"] == "nvidia" and source["power"]:
