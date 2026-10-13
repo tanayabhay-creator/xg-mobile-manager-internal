@@ -434,7 +434,7 @@ export const QuickAccessContent = () => {
           <PanelSectionRow>
             <SliderField
               label="CPU power limit"
-              description="Stops the Ally processor from boosting to feed the eGPU."
+              description="Stops the Ally processor from boosting to feed the eGPU. Temperature is held at 95°C so it cannot spike to 106°C."
               value={cpuTdp}
               min={Number(limits.cpu_tdp_min) || 8}
               max={Number(limits.cpu_tdp_max) || 45}

@@ -214,6 +214,7 @@ def _gpu_limit_source():
 
 ARMOURY_ROOT = "/sys/class/firmware-attributes/asus-armoury/attributes"
 PPT_NAMES = ["ppt_pl1_spl", "ppt_pl2_sppt", "ppt_fppt"]
+CPU_TEMP_LIMIT = 95
 
 def _armoury_tdp_info():
   for name in PPT_NAMES:
@@ -269,6 +270,16 @@ def _apply_ryzenadj_tdp(watts):
   ])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "ryzenadj failed").strip()
+  return ""
+
+def _apply_cpu_thermal_limit():
+  """The Ally firmware leaves the CPU uncapped, so a short boost reaches 106°C and the machine resets."""
+  tool = _which("ryzenadj")
+  if not tool:
+    return ""
+  result = _run_cmd([tool, f"--tctl-temp={CPU_TEMP_LIMIT}"])
+  if result.returncode != 0:
+    return (result.stderr or result.stdout or "Could not set the CPU temperature limit").strip()
   return ""
 
 def _ryzenadj_current():
@@ -1127,6 +1138,9 @@ class Plugin:
       err = _apply_cpu_clock(cpu_clock)
       if err:
         messages.append(err)
+    err = _apply_cpu_thermal_limit()
+    if err:
+      messages.append(err)
     _note_limit_error("; ".join(messages))
     return "Success" if not messages else "; ".join(messages)
 
