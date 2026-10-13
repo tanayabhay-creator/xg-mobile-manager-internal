@@ -6,7 +6,6 @@ import decky
 import decky_plugin
 import shutil
 import pwd
-import time
 import glob
 import re
 from settings import SettingsManager
@@ -337,158 +336,31 @@ def _apply_cpu_clock(mhz):
       break
   return errors[0] if errors else ""
 
-def _igpu_device():
+def _restore_igpu_automatic():
+  """Older builds locked the internal GPU. Put that chip back on its own control once."""
   amd = [card for card in _drm_cards() if card["vendor"] == "0x1002"]
+  device = ""
   for card in amd:
     for pattern in ("-eDP*", "-DSI*", "-LVDS*"):
       if any(os.path.isdir(path) for path in glob.glob(card["path"] + pattern)):
-        return os.path.join(card["path"], "device")
-  if len(amd) == 1:
-    return os.path.join(amd[0]["path"], "device")
-  return ""
-
-def _sclk_levels(device):
-  levels = []
-  if not device:
-    return levels
-  text = _read_text(os.path.join(device, "pp_dpm_sclk"))
-  for match in re.finditer(r"(?m)^\s*(\d+)\s*:\s*(\d+)\s*Mhz", text or "", re.I):
-    levels.append((int(match.group(1)), int(match.group(2))))
-  return levels
-
-def _igpu_clock_now():
-  device = _igpu_device()
-  if not device:
-    return 0
-  for node in glob.glob(os.path.join(device, "hwmon/hwmon*/freq1_input")):
-    try:
-      value = int(_read_text(node))
-    except Exception:
-      continue
-    if value > 1000000:
-      return int(value / 1000000)
-    if value > 10000:
-      return int(value / 1000)
-    if value > 0:
-      return value
-  text = _read_text(os.path.join(device, "pp_dpm_sclk"))
-  match = re.search(r"(\d+)\s*Mhz\s*\*", text or "", re.I)
-  return int(match.group(1)) if match else 0
-
-def _igpu_clock_info():
-  device = _igpu_device()
-  levels = [mhz for _, mhz in _sclk_levels(device)]
-  minimum = min(levels) if levels else 800
-  maximum = max(levels) if levels else 0
+        device = os.path.join(card["path"], "device")
+        break
+    if device:
+      break
+  if not device and len(amd) == 1:
+    device = os.path.join(amd[0]["path"], "device")
   if device:
-    od_text = _read_text(os.path.join(device, "pp_od_clk_voltage"))
-    match = re.search(r"OD_RANGE:.*?SCLK:\s*(\d+)\s*Mhz\s+(\d+)\s*Mhz", od_text, re.I | re.S)
-    if match and int(match.group(2)) > maximum:
-      maximum = int(match.group(2))
-      low = int(match.group(1))
-      if 200 <= low < maximum:
-        minimum = min(minimum, low)
-  if not _which("ryzenadj") and not levels:
-    return None
-  if maximum <= 800:
-    maximum = 2700
-  if minimum < 200 or minimum >= maximum:
-    minimum = 800
-  return {"min": minimum, "max": maximum}
-
-def _apply_ryzenadj_gfxclk(mhz, minimum=None):
+    level = os.path.join(device, "power_dpm_force_performance_level")
+    if os.path.exists(level) and _read_text(level) not in ("", "auto"):
+      _write_text(level, "auto")
   tool = _which("ryzenadj")
-  if not tool:
-    return "ryzenadj was not found"
-  if minimum is not None:
-    result = _run_cmd([tool, f"--min-gfxclk={int(minimum)}", f"--max-gfxclk={int(mhz)}"])
-    if result.returncode == 0:
-      return ""
-    held_error = (result.stderr or result.stdout or "ryzenadj could not hold the graphics clock").strip()
-  else:
-    held_error = ""
-  result = _run_cmd([tool, f"--max-gfxclk={int(mhz)}"])
-  if result.returncode == 0 and minimum is None:
-    return ""
-  if result.returncode != 0:
-    return (result.stderr or result.stdout or held_error or "ryzenadj failed").strip()
-  return held_error or "ryzenadj did not set the minimum graphics clock"
-
-def _release_igpu_manual():
-  """Manual mode with no enabled levels pins the Ally iGPU at 800 MHz."""
-  device = _igpu_device()
-  if not device:
-    return
-  level = os.path.join(device, "power_dpm_force_performance_level")
-  if not os.path.exists(level) or _read_text(level) in ("", "auto"):
-    return
-  _write_text(level, "auto")
-
-def _apply_igpu_sysfs(mhz, reset=False):
-  device = _igpu_device()
-  if not device:
-    return "The internal GPU was not found"
-  level_path = os.path.join(device, "power_dpm_force_performance_level")
-  sclk_path = os.path.join(device, "pp_dpm_sclk")
-  if reset or int(mhz) <= 0:
-    if os.path.exists(level_path):
-      return _write_text(level_path, "auto")
-    return ""
-  levels = _sclk_levels(device)
-  if not levels or not os.path.exists(level_path) or not os.path.exists(sclk_path):
-    return "The internal GPU clock levels were not found"
-  index, chosen = min(levels, key=lambda item: (abs(item[1] - int(mhz)), -item[1]))
-  if int(mhz) > 900 and chosen <= 900:
-    higher = [item for item in levels if item[1] > 900]
-    if not higher:
-      return "The internal GPU has no clock step above 800 MHz"
-    index, chosen = min(higher, key=lambda item: abs(item[1] - int(mhz)))
-  err = _write_text(level_path, "manual")
-  if err:
-    return err
-  err = _write_text(sclk_path, str(index))
-  if err:
-    _write_text(level_path, "auto")
-  return err
-
-def _igpu_clock_is_held(target):
-  now = _igpu_clock_now()
-  if now <= 0:
-    return True
-  return abs(now - int(target)) <= 200
-
-def _apply_igpu_clock(mhz):
-  info = _igpu_clock_info()
-  _release_igpu_manual()
-  if not info:
-    return "Internal GPU clock control was not found."
-  reset = int(mhz) <= 0
-  if reset:
-    messages = []
-    if _which("ryzenadj"):
-      err = _apply_ryzenadj_gfxclk(info["max"], info["min"])
-      if err:
-        messages.append(err)
-    err = _apply_igpu_sysfs(0, reset=True)
-    if err:
-      messages.append(err)
-    return "" if not messages or len(messages) < 2 else "; ".join(messages)
-  target = max(info["min"], min(info["max"], int(mhz)))
-  err = _apply_ryzenadj_gfxclk(target, target) if _which("ryzenadj") else "ryzenadj was not found"
-  if not err:
-    time.sleep(0.25)
-    if _igpu_clock_is_held(target):
-      return ""
-    err = "The graphics clock stayed at its 800 MHz floor."
-  sysfs_err = _apply_igpu_sysfs(target)
-  if not sysfs_err:
-    return ""
-  return f"{err}; {sysfs_err}"
+  if tool:
+    _run_cmd([tool, "--min-gfxclk=800", "--max-gfxclk=2700"])
 
 POWER_PRESETS = {
-  "quiet": {"gpu_power_ratio": 0.50, "gpu_clock_ratio": 0.65, "cpu_tdp": 13, "cpu_clock": 3200, "igpu_clock": 1400, "gpu_power_fallback": 80},
-  "balanced": {"gpu_power_ratio": 0.68, "gpu_clock_ratio": 0.82, "cpu_tdp": 18, "cpu_clock": 3800, "igpu_clock": 1800, "gpu_power_fallback": 110},
-  "performance": {"gpu_power_ratio": 0.82, "gpu_clock_ratio": 1.0, "cpu_tdp": 25, "cpu_clock": 4600, "igpu_clock": 2400, "gpu_power_fallback": 140},
+  "quiet": {"gpu_power_ratio": 0.50, "gpu_clock_ratio": 0.65, "cpu_tdp": 13, "cpu_clock": 3200, "gpu_power_fallback": 80},
+  "balanced": {"gpu_power_ratio": 0.68, "gpu_clock_ratio": 0.82, "cpu_tdp": 18, "cpu_clock": 3800, "gpu_power_fallback": 110},
+  "performance": {"gpu_power_ratio": 0.82, "gpu_clock_ratio": 1.0, "cpu_tdp": 25, "cpu_clock": 4600, "gpu_power_fallback": 140},
 }
 
 def _clamp_step(value, low, high, step):
@@ -529,9 +401,6 @@ def _preset_targets(name, source=None):
   clocks = _cpu_clock_info()
   if clocks:
     targets["cpu_clock_mhz"] = _clamp_step(spec["cpu_clock"], clocks["min"], clocks["max"], 100)
-  igpu = _igpu_clock_info()
-  if igpu:
-    targets["igpu_clock_mhz"] = _clamp_step(spec["igpu_clock"], igpu["min"], igpu["max"], 50)
   return targets
 
 def _apply_preset_value(key, value, source):
@@ -551,8 +420,6 @@ def _apply_preset_value(key, value, source):
     return _apply_cpu_tdp(value)
   if key == "cpu_clock_mhz":
     return _apply_cpu_clock(value)
-  if key == "igpu_clock_mhz":
-    return _apply_igpu_clock(value)
   return ""
 
 _last_limit_error = ""
@@ -1153,8 +1020,6 @@ class Plugin:
       parts.append(f"CPU {applied['cpu_tdp_watts']}W")
     if "cpu_clock_mhz" in applied:
       parts.append(f"CPU {applied['cpu_clock_mhz']} MHz")
-    if "igpu_clock_mhz" in applied:
-      parts.append(f"iGPU {applied['igpu_clock_mhz']} MHz")
     if not parts:
       return "Could not find CPU or GPU limits to set."
     summary = f"{name.title()} set. " + ", ".join(parts) + "."
@@ -1178,13 +1043,10 @@ class Plugin:
     clock = source["clock"]
     cpu_min, cpu_max, cpu_current, cpu_ok = _cpu_tdp_bounds()
     clocks = _cpu_clock_info() or {"min": 1400, "max": 5000, "current": 5000}
-    igpu_info = _igpu_clock_info()
-    igpu = igpu_info or {"min": 400, "max": 2700}
     saved_power = self._saved_limit("gpu_power_watts")
     saved_clock = self._saved_limit("gpu_clock_mhz")
     saved_tdp = self._saved_limit("cpu_tdp_watts")
     saved_cpu_clock = self._saved_limit("cpu_clock_mhz")
-    saved_igpu_clock = self._saved_limit("igpu_clock_mhz")
 
     def clamp(value, low, high):
       return min(high, max(low, value))
@@ -1209,11 +1071,6 @@ class Plugin:
       "cpu_clock_min": clocks["min"],
       "cpu_clock_max": clocks["max"],
       "cpu_clock": clamp(saved_cpu_clock or clocks["current"], clocks["min"], clocks["max"]),
-      "igpu_clock_supported": igpu_info is not None,
-      "igpu_clock_min": igpu["min"],
-      "igpu_clock_max": igpu["max"],
-      "igpu_clock": clamp(saved_igpu_clock or igpu["max"], igpu["min"], igpu["max"]),
-      "igpu_clock_now": _igpu_clock_now(),
     }
 
   def _fill_missing_preset_gpu(self):
@@ -1245,7 +1102,6 @@ class Plugin:
     gpu_clock = self._saved_limit("gpu_clock_mhz")
     cpu_tdp = self._saved_limit("cpu_tdp_watts")
     cpu_clock = self._saved_limit("cpu_clock_mhz")
-    igpu_clock = self._saved_limit("igpu_clock_mhz")
     source = _gpu_limit_source() if gpu_power > 0 or gpu_clock > 0 else {"kind": "none", "power": None, "clock": None}
     if gpu_power > 0:
       if source["kind"] == "nvidia":
@@ -1266,11 +1122,6 @@ class Plugin:
         messages.append(err)
     if cpu_clock > 0:
       err = _apply_cpu_clock(cpu_clock)
-      if err:
-        messages.append(err)
-    _release_igpu_manual()
-    if igpu_clock > 0:
-      err = _apply_igpu_clock(igpu_clock)
       if err:
         messages.append(err)
     _note_limit_error("; ".join(messages))
@@ -1316,17 +1167,6 @@ class Plugin:
     Plugin.settings.setSetting("cpu_clock_mhz", mhz)
     return "Success"
 
-  async def set_igpu_clock_limit(self, mhz):
-    mhz = _as_int(mhz)
-    err = _apply_igpu_clock(mhz)
-    if err:
-      return err
-    Plugin.settings.setSetting("igpu_clock_mhz", mhz)
-    return "Success"
-
-  async def get_igpu_live_clock(self):
-    return _igpu_clock_now()
-
   async def reset_power_limits(self):
     for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz", "power_preset"):
       Plugin.settings.setSetting(key, 0 if key != "power_preset" else "")
@@ -1352,26 +1192,13 @@ class Plugin:
       err = _apply_cpu_clock(0)
       if err:
         messages.append(err)
-    if _igpu_clock_info():
-      err = _apply_igpu_clock(0)
-      if err:
-        messages.append(err)
     return "Success" if not messages else "; ".join(messages)
-
-  async def _unlock_stuck_igpu(self):
-    device = _igpu_device()
-    level = _read_text(os.path.join(device, "power_dpm_force_performance_level")) if device else ""
-    saved = self._saved_limit("igpu_clock_mhz")
-    if level not in ("", "auto") and 0 < saved <= 800:
-      Plugin.settings.setSetting("igpu_clock_mhz", 0)
-    if self._saved_limit("igpu_clock_mhz") <= 0:
-      err = _apply_igpu_clock(0)
-      if err:
-        _note_limit_error(err)
 
   async def _keep_limits(self):
     try:
-      await self._unlock_stuck_igpu()
+      if getattr(Plugin, "settings", None):
+        Plugin.settings.setSetting("igpu_clock_mhz", 0)
+      _restore_igpu_automatic()
       await self.apply_saved_limits()
     except Exception as exc:
       _note_limit_error(str(exc))

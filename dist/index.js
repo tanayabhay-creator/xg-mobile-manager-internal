@@ -567,8 +567,6 @@ const QuickAccessContent = () => {
     const [gpuClock, setGpuClock] = SP_REACT.useState(2000);
     const [cpuTdp, setCpuTdp] = SP_REACT.useState(20);
     const [cpuClock, setCpuClock] = SP_REACT.useState(4000);
-    const [igpuClock, setIgpuClock] = SP_REACT.useState(2200);
-    const [igpuNow, setIgpuNow] = SP_REACT.useState(0);
     const limitTimers = SP_REACT.useRef({});
     const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
     // 1. Initial Load: Fetch Vendor Setting once
@@ -614,8 +612,6 @@ const QuickAccessContent = () => {
                 }
                 const prof = await call("get_power_profile");
                 setPowerProfile(prof);
-                const live = await call("get_igpu_live_clock");
-                setIgpuNow(Number(live) || 0);
             }
             catch (e) {
                 console.error("Poll Error:", e);
@@ -635,8 +631,6 @@ const QuickAccessContent = () => {
             setGpuClock(Number(status.gpu_clock) || 0);
             setCpuTdp(Number(status.cpu_tdp) || 0);
             setCpuClock(Number(status.cpu_clock) || 0);
-            setIgpuClock(Number(status.igpu_clock) || 0);
-            setIgpuNow(Number(status.igpu_clock_now) || 0);
         }
         catch (e) {
             console.error("Limit status error:", e);
@@ -817,12 +811,7 @@ const QuickAccessContent = () => {
                             } }) })), limits?.gpu_ready && limits.gpu_clock_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "GPU max clock", description: "Caps the XG Mobile graphics clock.", value: gpuClock, min: Number(limits.gpu_clock_min) || 500, max: Number(limits.gpu_clock_max) || 2500, step: 50, showValue: true, valueSuffix: " MHz", disabled: !gpuStatus.active || isLoading, onChange: (value) => {
                                 setGpuClock(value);
                                 queueLimit("set_gpu_clock_limit", value);
-                            } }) })), limits?.igpu_clock_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "iGPU max clock", description: igpuNow > 0
-                                ? `Holds the internal graphics at this speed. Running now at ${igpuNow} MHz.`
-                                : "Holds the internal graphics at this speed so it does not stay at 800 MHz.", value: igpuClock, min: Number(limits.igpu_clock_min) || 400, max: Number(limits.igpu_clock_max) || 2700, step: 50, showValue: true, valueSuffix: " MHz", disabled: isLoading, onChange: (value) => {
-                                setIgpuClock(value);
-                                queueLimit("set_igpu_clock_limit", value);
-                            } }) })), limits && !limits.igpu_clock_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.8 }, children: "Internal GPU clock control needs ryzenadj, or the AMD clock levels in the kernel." }) })), limits?.cpu_tdp_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "CPU power limit", description: "Stops the Ally processor from boosting to feed the eGPU.", value: cpuTdp, min: Number(limits.cpu_tdp_min) || 8, max: Number(limits.cpu_tdp_max) || 45, step: 1, showValue: true, valueSuffix: " W", disabled: isLoading, onChange: (value) => {
+                            } }) })), limits?.cpu_tdp_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "CPU power limit", description: "Stops the Ally processor from boosting to feed the eGPU.", value: cpuTdp, min: Number(limits.cpu_tdp_min) || 8, max: Number(limits.cpu_tdp_max) || 45, step: 1, showValue: true, valueSuffix: " W", disabled: isLoading, onChange: (value) => {
                                 setCpuTdp(value);
                                 queueLimit("set_cpu_tdp", value);
                             } }) })), limits && !limits.cpu_tdp_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.8 }, children: "CPU watt control needs ryzenadj, or the ASUS power attributes in the kernel." }) })), limits?.cpu_clock_supported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "CPU max clock", description: "Caps the processor boost clock that is pushing it to 80\u00B0C.", value: cpuClock, min: Number(limits.cpu_clock_min) || 1400, max: Number(limits.cpu_clock_max) || 5000, step: 100, showValue: true, valueSuffix: " MHz", disabled: isLoading, onChange: (value) => {

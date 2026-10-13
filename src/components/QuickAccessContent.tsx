@@ -49,8 +49,6 @@ export const QuickAccessContent = () => {
   const [gpuClock, setGpuClock] = useState(2000);
   const [cpuTdp, setCpuTdp] = useState(20);
   const [cpuClock, setCpuClock] = useState(4000);
-  const [igpuClock, setIgpuClock] = useState(2200);
-  const [igpuNow, setIgpuNow] = useState(0);
   const limitTimers = useRef<Record<string, number>>({});
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
@@ -94,8 +92,6 @@ export const QuickAccessContent = () => {
         }
         const prof = await call("get_power_profile") as string;
         setPowerProfile(prof);
-        const live = await call("get_igpu_live_clock") as number;
-        setIgpuNow(Number(live) || 0);
       } catch (e) {
         console.error("Poll Error:", e);
       }
@@ -115,8 +111,6 @@ export const QuickAccessContent = () => {
       setGpuClock(Number(status.gpu_clock) || 0);
       setCpuTdp(Number(status.cpu_tdp) || 0);
       setCpuClock(Number(status.cpu_clock) || 0);
-      setIgpuClock(Number(status.igpu_clock) || 0);
-      setIgpuNow(Number(status.igpu_clock_now) || 0);
     } catch (e) {
       console.error("Limit status error:", e);
     }
@@ -434,34 +428,6 @@ export const QuickAccessContent = () => {
                 queueLimit("set_gpu_clock_limit", value);
               }}
             />
-          </PanelSectionRow>
-        )}
-        {limits?.igpu_clock_supported && (
-          <PanelSectionRow>
-            <SliderField
-              label="iGPU max clock"
-              description={igpuNow > 0
-                ? `Holds the internal graphics at this speed. Running now at ${igpuNow} MHz.`
-                : "Holds the internal graphics at this speed so it does not stay at 800 MHz."}
-              value={igpuClock}
-              min={Number(limits.igpu_clock_min) || 400}
-              max={Number(limits.igpu_clock_max) || 2700}
-              step={50}
-              showValue
-              valueSuffix=" MHz"
-              disabled={isLoading}
-              onChange={(value) => {
-                setIgpuClock(value);
-                queueLimit("set_igpu_clock_limit", value);
-              }}
-            />
-          </PanelSectionRow>
-        )}
-        {limits && !limits.igpu_clock_supported && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "13px", opacity: 0.8 }}>
-              Internal GPU clock control needs ryzenadj, or the AMD clock levels in the kernel.
-            </div>
           </PanelSectionRow>
         )}
         {limits?.cpu_tdp_supported && (
