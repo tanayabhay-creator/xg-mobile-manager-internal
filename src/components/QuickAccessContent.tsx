@@ -388,14 +388,14 @@ export const QuickAccessContent = () => {
         {limits && !limits.gpu_ready && (
           <PanelSectionRow>
             <div style={{ fontSize: "13px", opacity: 0.8 }}>
-              Enable the XG Mobile to cap its power and clocks. A preset selected above is saved and applied when the eGPU is on.
+              Enable the XG Mobile to apply the eGPU limits below.
             </div>
           </PanelSectionRow>
         )}
-        {limits?.gpu_ready && (
+        {limits && (
           <PanelSectionRow>
             <SliderField
-              label="GPU power limit"
+              label="eGPU power limit"
               description="Lower the XG Mobile wattage to bring GPU temperature down."
               value={gpuPower}
               min={Number(limits.gpu_power_min) || 5}
@@ -411,10 +411,10 @@ export const QuickAccessContent = () => {
             />
           </PanelSectionRow>
         )}
-        {limits?.gpu_ready && limits.gpu_clock_supported && (
+        {limits && limits.gpu_kind !== "amd" && (
           <PanelSectionRow>
             <SliderField
-              label="GPU max clock"
+              label="eGPU max clock"
               description="Caps the XG Mobile graphics clock."
               value={gpuClock}
               min={Number(limits.gpu_clock_min) || 500}

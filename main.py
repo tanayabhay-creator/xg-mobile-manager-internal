@@ -353,9 +353,6 @@ def _restore_igpu_automatic():
     level = os.path.join(device, "power_dpm_force_performance_level")
     if os.path.exists(level) and _read_text(level) not in ("", "auto"):
       _write_text(level, "auto")
-  tool = _which("ryzenadj")
-  if tool:
-    _run_cmd([tool, "--min-gfxclk=800", "--max-gfxclk=2700"])
 
 POWER_PRESETS = {
   "quiet": {"gpu_power_ratio": 0.50, "gpu_clock_ratio": 0.65, "cpu_tdp": 13, "cpu_clock": 3200, "gpu_power_fallback": 80},
@@ -1059,7 +1056,7 @@ class Plugin:
       "gpu_power_min": power["min"],
       "gpu_power_max": power["max"],
       "gpu_power": clamp(saved_power or power["current"], power["min"], power["max"]),
-      "gpu_clock_supported": clock is not None,
+      "gpu_clock_supported": source["kind"] != "amd",
       "gpu_clock_min": clock_min,
       "gpu_clock_max": clock_max,
       "gpu_clock": clamp(saved_clock or clock_max, clock_min, clock_max),
@@ -1135,7 +1132,7 @@ class Plugin:
     elif source["kind"] == "amd":
       err = _apply_amd_power(watts)
     else:
-      err = "The eGPU is not available yet. Enable the XG Mobile first."
+      err = ""
     if err:
       return err
     Plugin.settings.setSetting("gpu_power_watts", watts)
@@ -1143,11 +1140,13 @@ class Plugin:
 
   async def set_gpu_clock_limit(self, mhz):
     mhz = _as_int(mhz)
-    if _gpu_limit_source()["kind"] != "nvidia":
+    kind = _gpu_limit_source()["kind"]
+    if kind == "amd":
       return "Clock limiting is available for the NVIDIA XG Mobile."
-    err = _apply_nvidia_clock(mhz)
-    if err:
-      return err
+    if kind == "nvidia":
+      err = _apply_nvidia_clock(mhz)
+      if err:
+        return err
     Plugin.settings.setSetting("gpu_clock_mhz", mhz)
     return "Success"
 
