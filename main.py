@@ -285,6 +285,72 @@ def _apply_cpu_thermal_limit():
     return (result.stderr or result.stdout or "Could not set the CPU temperature limit").strip()
   return ""
 
+_fan_taken = False
+_fan_pwm = -1
+
+def _cpu_temp_c():
+  for hwmon in glob.glob("/sys/class/hwmon/hwmon*"):
+    if _read_text(os.path.join(hwmon, "name")) not in ("k10temp", "zenpower"):
+      continue
+    raw = _read_text(os.path.join(hwmon, "temp1_input"))
+    if not raw:
+      continue
+    try:
+      temp = int(raw) / 1000.0
+    except Exception:
+      continue
+    if 1 < temp < 125:
+      return temp
+  return 0
+
+def _ally_fans():
+  fans = []
+  for hwmon in glob.glob("/sys/class/hwmon/hwmon*"):
+    if "asus" not in _read_text(os.path.join(hwmon, "name")).lower():
+      continue
+    for idx in (1, 2, 3):
+      pwm = os.path.join(hwmon, f"pwm{idx}")
+      if not os.path.exists(pwm):
+        continue
+      enable = os.path.join(hwmon, f"pwm{idx}_enable")
+      fans.append((pwm, enable if os.path.exists(enable) else ""))
+  return fans
+
+def _fan_target(temp):
+  # Windows settles near 70°C because the fan is already spinning hard there.
+  if temp <= 55:
+    return 64
+  if temp >= 85:
+    return 255
+  return int(64 + (temp - 55) * (255 - 64) / 30.0)
+
+def _apply_ally_fan():
+  """Speed the Ally fan from temperature. This does not touch the power controller."""
+  global _fan_taken, _fan_pwm
+  temp = _cpu_temp_c()
+  fans = _ally_fans()
+  if temp <= 0 or not fans:
+    return
+  target = _fan_target(temp)
+  if _fan_taken and abs(target - _fan_pwm) < 8:
+    return
+  for pwm, enable in fans:
+    if enable:
+      _write_text(enable, 1)
+    _write_text(pwm, target)
+  _fan_taken = True
+  _fan_pwm = target
+
+def _release_ally_fan():
+  global _fan_taken, _fan_pwm
+  if not _fan_taken:
+    return
+  for _pwm, enable in _ally_fans():
+    if enable:
+      _write_text(enable, 2)
+  _fan_taken = False
+  _fan_pwm = -1
+
 def _ryzenadj_watts(value):
   value = float(value)
   if value > 500:
@@ -1275,6 +1341,7 @@ class Plugin:
         if idle_ticks < 20:
           continue
         idle_ticks = 0
+        _apply_ally_fan()
         if not _game_running():
           gpu_tick = 0
           continue
@@ -1509,6 +1576,7 @@ class Plugin:
   async def _unload(self):
     if getattr(self, "_limit_stop", None):
       self._limit_stop.set()
+    _release_ally_fan()
     decky.logger.info("Unloading Plugin.")
 
   # Function called when the plugin is uninstalled

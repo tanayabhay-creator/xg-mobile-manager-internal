@@ -355,7 +355,7 @@ export const QuickAccessContent = () => {
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
-            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power. Changing a profile or the eGPU watt limit makes the Ally drop the CPU cap, so this plugin puts that cap back immediately.
+            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power. The Ally fan speeds up with temperature to hold the chip near 70°C. Changing a profile or the eGPU watt limit makes the Ally drop the CPU cap, so this plugin puts that cap back immediately.
           </div>
           <Dropdown
             selectedOption={powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? powerProfile : "Balanced"}
