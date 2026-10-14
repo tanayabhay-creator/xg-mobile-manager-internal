@@ -3,6 +3,7 @@ import subprocess
 import os
 import json
 import threading
+import time
 import decky
 import decky_plugin
 import shutil
@@ -419,6 +420,12 @@ def _preset_targets(name, source=None):
   if source is None:
     source = _gpu_limit_source()
   targets = {}
+  cpu_min, cpu_max, _, cpu_ok = _cpu_tdp_bounds()
+  if cpu_ok:
+    targets["cpu_tdp_watts"] = _clamp_step(spec["cpu_tdp"], cpu_min, cpu_max, 1)
+  clocks = _cpu_clock_info()
+  if clocks:
+    targets["cpu_clock_mhz"] = _clamp_step(spec["cpu_clock"], clocks["min"], clocks["max"], 100)
   power = source.get("power") if source else None
   if power:
     targets["gpu_power_watts"] = _clamp_step(power["max"] * spec["gpu_power_ratio"], power["min"], power["max"], 5)
@@ -427,12 +434,6 @@ def _preset_targets(name, source=None):
   clock = source.get("clock") if source else None
   if source and source.get("kind") == "nvidia" and clock:
     targets["gpu_clock_mhz"] = _clamp_step(clock["max"] * spec["gpu_clock_ratio"], clock["min"], clock["max"], 50)
-  cpu_min, cpu_max, _, cpu_ok = _cpu_tdp_bounds()
-  if cpu_ok:
-    targets["cpu_tdp_watts"] = _clamp_step(spec["cpu_tdp"], cpu_min, cpu_max, 1)
-  clocks = _cpu_clock_info()
-  if clocks:
-    targets["cpu_clock_mhz"] = _clamp_step(spec["cpu_clock"], clocks["min"], clocks["max"], 100)
   return targets
 
 def _apply_preset_value(key, value, source):
@@ -1025,12 +1026,15 @@ class Plugin:
     applied = {}
     messages = []
     for key, value in targets.items():
+      self._arm_cpu_seal()
       err = _apply_preset_value(key, value, source)
       if err:
         messages.append(err)
+        self._arm_cpu_seal()
         continue
       Plugin.settings.setSetting(key, int(value))
       applied[key] = int(value)
+      self._arm_cpu_seal()
     Plugin.settings.setSetting("power_preset", name)
 
     parts = []
@@ -1146,6 +1150,7 @@ class Plugin:
 
   async def set_gpu_power_limit(self, watts):
     watts = _as_int(watts)
+    self._arm_cpu_seal()
     source = _gpu_limit_source()
     if source["kind"] == "nvidia":
       err = _apply_nvidia_power(watts)
@@ -1153,6 +1158,7 @@ class Plugin:
       err = _apply_amd_power(watts)
     else:
       err = ""
+    self._arm_cpu_seal()
     if err:
       return err
     Plugin.settings.setSetting("gpu_power_watts", watts)
@@ -1163,10 +1169,13 @@ class Plugin:
     kind = _gpu_limit_source()["kind"]
     if kind == "amd":
       return "Clock limiting is available for the NVIDIA XG Mobile."
+    self._arm_cpu_seal()
     if kind == "nvidia":
       err = _apply_nvidia_clock(mhz)
       if err:
+        self._arm_cpu_seal()
         return err
+    self._arm_cpu_seal()
     Plugin.settings.setSetting("gpu_clock_mhz", mhz)
     return "Success"
 
@@ -1176,11 +1185,14 @@ class Plugin:
     if err:
       return err
     Plugin.settings.setSetting("cpu_tdp_watts", watts)
+    self._arm_cpu_seal()
     return "Success"
 
   async def set_cpu_clock_limit(self, mhz):
     mhz = _as_int(mhz)
+    self._arm_cpu_seal()
     err = _apply_cpu_clock(mhz)
+    self._arm_cpu_seal()
     if err:
       return err
     Plugin.settings.setSetting("cpu_clock_mhz", mhz)
@@ -1190,6 +1202,7 @@ class Plugin:
     for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz", "power_preset"):
       Plugin.settings.setSetting(key, 0 if key != "power_preset" else "")
     messages = []
+    self._arm_cpu_seal()
     source = _gpu_limit_source()
     if source["kind"] == "nvidia" and source["power"]:
       err = _apply_nvidia_power(source["power"]["max"])
@@ -1211,7 +1224,16 @@ class Plugin:
       err = _apply_cpu_clock(0)
       if err:
         messages.append(err)
+    self._arm_cpu_seal()
     return "Success" if not messages else "; ".join(messages)
+
+  def _arm_cpu_seal(self):
+    """The Ally controller clears the CPU boost cap when a watt or clock change lands.
+
+    Put the cap back immediately, then keep checking for a couple of seconds.
+    """
+    self._seal_until = time.time() + 2.5
+    self._hold_cpu_boost()
 
   def _hold_cpu_boost(self):
     """Put the watt cap back only when firmware has cleared it."""
@@ -1238,13 +1260,21 @@ class Plugin:
       _note_limit_error(err)
 
   def _watch_limits(self):
-    """Stay quiet on the Game Mode library. Touch the CPU only while a game is open."""
+    """Stay quiet on the library, except for the short seal after a power change."""
     gpu_tick = 0
     refreshed = False
+    idle_ticks = 0
     while not self._limit_stop.is_set():
-      if self._limit_stop.wait(2):
+      if self._limit_stop.wait(0.1):
         return
       try:
+        if time.time() < getattr(self, "_seal_until", 0):
+          self._hold_cpu_boost()
+          continue
+        idle_ticks += 1
+        if idle_ticks < 20:
+          continue
+        idle_ticks = 0
         if not _game_running():
           gpu_tick = 0
           continue
@@ -1459,6 +1489,7 @@ class Plugin:
     asyncio.create_task(self.watch_eject_request())
     asyncio.create_task(self.watch_enable_request())
     self._limit_stop = threading.Event()
+    self._seal_until = 0
     threading.Thread(target=self._watch_limits, name="xgmobile-limits", daemon=True).start()
 
 #    try:
