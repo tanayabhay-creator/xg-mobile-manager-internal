@@ -2,6 +2,7 @@ import asyncio
 import subprocess
 import os
 import json
+import threading
 import decky
 import decky_plugin
 import shutil
@@ -256,26 +257,6 @@ def _armoury_tdp_info():
     }
   return None
 
-def _apply_armoury_tdp(watts):
-  info = _armoury_tdp_info()
-  if not info:
-    return "ASUS CPU power attributes were not found"
-  watts = max(info["min"], min(info["max"], int(watts)))
-  raw = watts * info["scale"]
-  wrote = False
-  errors = []
-  for name in PPT_NAMES:
-    path = os.path.join(ARMOURY_ROOT, name, "current_value")
-    if not os.path.exists(path):
-      continue
-    wrote = True
-    err = _write_text(path, raw)
-    if err:
-      errors.append(err)
-  if not wrote:
-    return "ASUS CPU power attributes were not found"
-  return "; ".join(errors)
-
 def _apply_ryzenadj_tdp(watts):
   tool = _which("ryzenadj")
   if not tool:
@@ -338,25 +319,24 @@ def _cpu_tdp_bounds():
   return 8, 45, 15, False
 
 def _apply_cpu_tdp(watts):
-  ok = False
-  messages = []
-  if _armoury_tdp_info():
-    err = _apply_armoury_tdp(watts)
-    if err:
-      messages.append(err)
-    else:
-      ok = True
+  # ryzenadj talks to the CPU directly. Writing the ASUS firmware attributes
+  # makes the controller drop the boost cap, which freezes the Ally even in the library.
   if _which("ryzenadj"):
-    err = _apply_ryzenadj_tdp(watts)
-    if err:
-      messages.append(err)
-    else:
-      ok = True
-  if ok:
-    return ""
-  if messages:
-    return "; ".join(messages)
-  return "CPU power control was not found. Install ryzenadj, or use a kernel with ASUS power attributes."
+    return _apply_ryzenadj_tdp(watts)
+  return "CPU power control was not found. Install ryzenadj."
+
+def _game_running():
+  """True only while a Proton or Wine game is open, not on the Game Mode library."""
+  needles = (b"pressure-vessel", b"wine64-preloader", b"wine-preloader")
+  for path in glob.glob("/proc/[0-9]*/cmdline"):
+    try:
+      with open(path, "rb") as handle:
+        raw = handle.read()
+    except Exception:
+      continue
+    if any(needle in raw for needle in needles):
+      return True
+  return False
 
 def _cpu_freq_files(name):
   return glob.glob(f"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/{name}")
@@ -1030,25 +1010,15 @@ class Plugin:
       return "Error"
 
   async def set_power_profile(self, profile: str):
+    return self._set_power_profile_now(profile)
+
+  def _set_power_profile_now(self, profile: str):
     if isinstance(profile, dict):
       profile = profile.get("profile", "")
     name = _preset_name(profile)
     if not name:
       return "Choose Quiet, Balanced, or Performance."
     log(f"Applying power preset: {name}")
-
-    wmi = {"quiet": ("2", "quiet"), "balanced": ("0", "balanced"), "performance": ("1", "performance")}
-    val_to_write, platform_name = wmi[name]
-    policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
-    if os.path.exists(policy_path):
-      _write_text(policy_path, val_to_write)
-    profile_path = "/sys/firmware/acpi/platform_profile"
-    choices = _read_text(profile_path + "_choices").split()
-    desired = platform_name
-    if desired not in choices and desired == "quiet" and "low-power" in choices:
-      desired = "low-power"
-    if os.path.exists(profile_path) and desired in choices:
-      _write_text(profile_path, desired)
 
     source = _gpu_limit_source()
     targets = _preset_targets(name, source)
@@ -1147,7 +1117,7 @@ class Plugin:
     if need_clock and targets.get("gpu_clock_mhz"):
       Plugin.settings.setSetting("gpu_clock_mhz", int(targets["gpu_clock_mhz"]))
 
-  async def apply_saved_limits(self):
+  def apply_saved_limits(self):
     self._fill_missing_preset_gpu()
     messages = []
     gpu_power = self._saved_limit("gpu_power_watts")
@@ -1171,8 +1141,6 @@ class Plugin:
       err = _apply_cpu_clock(cpu_clock)
       if err:
         messages.append(err)
-    # CPU watts are owned by _hold_cpu_boost. Rewriting the ASUS attributes on
-    # a timer is what makes the firmware drop the boost cap.
     _note_limit_error("; ".join(messages))
     return "Success" if not messages else "; ".join(messages)
 
@@ -1245,13 +1213,8 @@ class Plugin:
         messages.append(err)
     return "Success" if not messages else "; ".join(messages)
 
-  async def _hold_cpu_boost(self):
-    """Put the watt cap back only when firmware has cleared it.
-
-    Writing the ASUS attributes every second makes the embedded controller drop
-    the fast limit. The cores then boost without a cap, the hotspot hits about
-    106°C, and the game freezes until the clocks recover.
-    """
+  def _hold_cpu_boost(self):
+    """Put the watt cap back only when firmware has cleared it."""
     watts = self._saved_limit("cpu_tdp_watts")
     limits = _ryzenadj_limits()
     if watts <= 0 and limits and limits.get("stapm"):
@@ -1274,33 +1237,35 @@ class Plugin:
     if err:
       _note_limit_error(err)
 
-  async def _keep_limits(self):
-    try:
-      if getattr(Plugin, "settings", None):
-        Plugin.settings.setSetting("igpu_clock_mhz", 0)
-        revision = 0
-        try:
-          revision = int(float(Plugin.settings.getSetting("preset_revision", 0) or 0))
-        except Exception:
-          revision = 0
-        if revision != 3:
-          name = str(Plugin.settings.getSetting("power_preset", "") or "")
-          if name:
-            await self.set_power_profile(name)
-          Plugin.settings.setSetting("preset_revision", 3)
-      _restore_igpu_automatic()
-      await self.apply_saved_limits()
-      await self._hold_cpu_boost()
-    except Exception as exc:
-      _note_limit_error(str(exc))
-    tick = 0
-    while True:
-      await asyncio.sleep(0.25)
-      tick += 1
+  def _watch_limits(self):
+    """Stay quiet on the Game Mode library. Touch the CPU only while a game is open."""
+    gpu_tick = 0
+    refreshed = False
+    while not self._limit_stop.is_set():
+      if self._limit_stop.wait(2):
+        return
       try:
-        await self._hold_cpu_boost()
-        if tick % 20 == 0:
-          await self.apply_saved_limits()
+        if not _game_running():
+          gpu_tick = 0
+          continue
+        if not refreshed and getattr(Plugin, "settings", None):
+          Plugin.settings.setSetting("igpu_clock_mhz", 0)
+          revision = 0
+          try:
+            revision = int(float(Plugin.settings.getSetting("preset_revision", 0) or 0))
+          except Exception:
+            revision = 0
+          if revision != 4:
+            name = str(Plugin.settings.getSetting("power_preset", "") or "")
+            if name:
+              self._set_power_profile_now(name)
+            Plugin.settings.setSetting("preset_revision", 4)
+          _restore_igpu_automatic()
+          refreshed = True
+        self._hold_cpu_boost()
+        gpu_tick += 1
+        if gpu_tick == 1 or gpu_tick % 15 == 0:
+          self.apply_saved_limits()
       except Exception as exc:
         _note_limit_error(str(exc))
 
@@ -1493,7 +1458,8 @@ class Plugin:
     
     asyncio.create_task(self.watch_eject_request())
     asyncio.create_task(self.watch_enable_request())
-    asyncio.create_task(self._keep_limits())
+    self._limit_stop = threading.Event()
+    threading.Thread(target=self._watch_limits, name="xgmobile-limits", daemon=True).start()
 
 #    try:
 #      # Check if the eGPU survived the reboot and is still active
@@ -1510,6 +1476,8 @@ class Plugin:
 
   # Function called first during the unload process, utilize this to handle your plugin being removed
   async def _unload(self):
+    if getattr(self, "_limit_stop", None):
+      self._limit_stop.set()
     decky.logger.info("Unloading Plugin.")
 
   # Function called when the plugin is uninstalled

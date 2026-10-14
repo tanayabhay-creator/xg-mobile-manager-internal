@@ -355,7 +355,7 @@ export const QuickAccessContent = () => {
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
-            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power. The CPU watt cap is restored only if the firmware clears it, so a boost cannot run away into a freeze. Eject and Enable once after this update.
+            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power. Caps are applied when a game is open, and the library is left alone so Quick Access cannot hang on a power-controller write.
           </div>
           <Dropdown
             selectedOption={powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? powerProfile : "Balanced"}
