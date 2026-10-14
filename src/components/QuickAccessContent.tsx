@@ -42,6 +42,7 @@ export const QuickAccessContent = () => {
   const [selectedDesktopMode, setSelectedDesktopMode] = useState("0");
   const [selectedDesktopDefault, setSelectedDesktopDefault] = useState("0");
   const [displayTarget, setDisplayTarget] = useState("external");
+  const [panel60, setPanel60] = useState(false);
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
   const [limits, setLimits] = useState<any>(null);
@@ -64,6 +65,8 @@ export const QuickAccessContent = () => {
         setSelectedDesktopDefault(desktopdefault);
         const display = await call("get_setting", "display_target", "external") as string;
         setDisplayTarget(display === "internal" ? "internal" : "external");
+        const panel = await call("get_setting", "panel_60hz", "0") as string;
+        setPanel60(panel === "1");
         const ver = await call("get_version") as string;
         if (ver) setPluginVersion(ver);
         const os = await call("get_os_status") as string;
@@ -231,6 +234,10 @@ export const QuickAccessContent = () => {
     const nextTarget = val ? "internal" : "external";
     setDisplayTarget(nextTarget);
     await call("set_setting", "display_target", nextTarget) as string;
+  };
+  const togglePanel60 = async (val: boolean) => {
+    setPanel60(val);
+    await call("set_setting", "panel_60hz", val ? "1" : "0") as string;
   };
   const toggleDesktopMode = async (val: boolean) => {
     const newDesktopMode = val ? "1" : "0";
@@ -556,12 +563,23 @@ export const QuickAccessContent = () => {
             <PanelSectionRow>
               <ToggleField
                 label="Play on Internal Screen"
-                description="Keep Game Mode on the Ally's built-in display. Games render on the XG Mobile and the picture is sent back to the internal screen. The panel stays at 120 Hz and the game's real frames are capped at 60, so frame generation can fill 120. Eject and Enable to apply. Turn this off to use a monitor plugged into the XG Mobile."
+                description="Keep Game Mode on the Ally's built-in display. Games render on the XG Mobile and the picture is sent back to the internal screen. Turn this off to use a monitor plugged into the XG Mobile."
                 disabled={gpuStatus.active || isLoading}
                 checked={displayTarget === "internal"}
                 onChange={toggleDisplayTarget}
               />
             </PanelSectionRow>
+            {displayTarget === "internal" && (
+              <PanelSectionRow>
+                <ToggleField
+                  label="60 Hz panel lock"
+                  description="Locks the Ally panel at 60 Hz with the game at 60 real frames. Leave this off to keep the panel at 120 Hz so frame generation can fill 120. Eject and Enable to apply."
+                  disabled={gpuStatus.active || isLoading}
+                  checked={panel60}
+                  onChange={togglePanel60}
+                />
+              </PanelSectionRow>
+            )}
             <PanelSectionRow>
               <ToggleField
                 label="DesktopMode on Enable"

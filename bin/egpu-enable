@@ -40,6 +40,22 @@ resolve_display_target() {
   DISPLAY_TARGET="external"
 }
 
+resolve_panel_lock() {
+  local settings_json from_json
+  PANEL_60HZ=0
+  if [ -z "$DATA_DIR" ]; then
+    return
+  fi
+  settings_json="$(readlink -f "$DATA_DIR/../../settings/xgmobile-manager/settings.json" 2>/dev/null || true)"
+  if [ ! -f "$settings_json" ]; then
+    return
+  fi
+  from_json=$(sed -n 's/.*"panel_60hz"[[:space:]]*:[[:space:]]*"\{0,1\}\([01]\)"\{0,1\}.*/\1/p' "$settings_json" | head -n 1)
+  if [ "$from_json" = "1" ]; then
+    PANEL_60HZ=1
+  fi
+}
+
 fmt_pci_id() {
   local card_dev="/sys/class/drm/$(basename "$1")/device"
   local v d
@@ -147,6 +163,7 @@ apply_display_config() {
   local display_conf="/home/$PRIMARY_USER/.config/environment.d/zz-xgmobile-display.conf"
   local old_conf="/home/$PRIMARY_USER/.config/environment.d/10-xgmobile-display.conf"
   collect_display_facts
+  resolve_panel_lock
   mkdir -p "$DATA_DIR"
   printf "%s\n" "$DISPLAY_TARGET" > "$DATA_DIR/display_target"
   rm -f "$old_conf"
@@ -180,18 +197,25 @@ apply_display_config() {
       echo "__GL_YIELD=USLEEP"
     fi
     # Empty, not 0. Gamescope turns variable refresh on for any non-empty value.
-    # 120,120 keeps the panel at 120 Hz. The Quick Access slider cannot hold
-    # that while the XG Mobile is connected. 60 is the game's own present rate,
-    # so Lossless Scaling can turn those frames into 120. A 60 Hz panel would
-    # throw the generated frames away.
+    # The game's own presents stay at 60 either way. 120 Hz leaves room for
+    # frame generation. 60 Hz is the lock used to compare a 1:1 panel.
     echo "ADAPTIVE_SYNC="
-    echo "STEAM_DISPLAY_REFRESH_LIMITS=120,120"
+    if [ "$PANEL_60HZ" = "1" ]; then
+      echo "STEAM_DISPLAY_REFRESH_LIMITS=60,60"
+    else
+      echo "STEAM_DISPLAY_REFRESH_LIMITS=120,120"
+    fi
     echo "VKD3D_FRAME_RATE=60"
     echo "DXVK_FRAME_RATE=60"
     echo "vk_xwayland_wait_ready=false"
   } > "$display_conf"
   chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
   chmod 644 "$display_conf"
+  if [ "$PANEL_60HZ" = "1" ]; then
+    echo "Panel lock: 60 Hz, game real frames 60."
+  else
+    echo "Panel lock: 120 Hz, game real frames 60."
+  fi
   echo "Wrote Game Mode internal-screen config to $display_conf"
 }
 
