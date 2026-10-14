@@ -180,11 +180,12 @@ apply_display_config() {
       echo "__GL_YIELD=USLEEP"
     fi
     # Empty, not 0. Gamescope turns variable refresh on for any non-empty value.
-    # 60,60 locks the Ally panel at 60 Hz. The Quick Access slider cannot hold
-    # that while the XG Mobile is connected, and the game's exclusive fullscreen
-    # option is ignored by Gamescope and snaps back.
+    # 120,120 keeps the panel at 120 Hz. The Quick Access slider cannot hold
+    # that while the XG Mobile is connected. 60 is the game's own present rate,
+    # so Lossless Scaling can turn those frames into 120. A 60 Hz panel would
+    # throw the generated frames away.
     echo "ADAPTIVE_SYNC="
-    echo "STEAM_DISPLAY_REFRESH_LIMITS=60,60"
+    echo "STEAM_DISPLAY_REFRESH_LIMITS=120,120"
     echo "VKD3D_FRAME_RATE=60"
     echo "DXVK_FRAME_RATE=60"
     echo "vk_xwayland_wait_ready=false"

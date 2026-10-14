@@ -517,6 +517,58 @@ def _apply_cpu_clock(mhz):
       break
   return errors[0] if errors else ""
 
+def _cpu_policy_files(name):
+  paths = glob.glob(f"/sys/devices/system/cpu/cpufreq/policy[0-9]*/{name}")
+  paths.extend(_cpu_freq_files(name))
+  return paths
+
+_epp_file = None
+
+def _current_cpu_epp():
+  global _epp_file
+  if _epp_file is None:
+    found = _cpu_policy_files("energy_performance_preference")
+    _epp_file = found[0] if found else ""
+  if not _epp_file:
+    return ""
+  return _read_text(_epp_file)
+
+def _cpu_epp_choices():
+  for path in _cpu_policy_files("energy_performance_available_preferences"):
+    text = _read_text(path)
+    if text:
+      return text.split()
+  return []
+
+def _cpu_scaling_driver():
+  for path in _cpu_policy_files("scaling_driver"):
+    text = _read_text(path)
+    if text:
+      return text
+  return ""
+
+def _apply_cpu_epp(preference):
+  """Let the cores leave the clock cap when the frame does not need it.
+
+  This is the Linux form of G-Helper's efficient boost. It does not write
+  the ASUS power limits.
+  """
+  choices = _cpu_epp_choices()
+  if choices and preference not in choices:
+    return f"CPU boost preference {preference} is not available"
+  paths = _cpu_policy_files("energy_performance_preference")
+  if not paths:
+    return "CPU boost preference was not found"
+  errors = []
+  for path in paths:
+    if _read_text(path) == preference:
+      continue
+    err = _write_text(path, preference)
+    if err:
+      errors.append(err)
+      break
+  return errors[0] if errors else ""
+
 def _restore_igpu_automatic():
   """Older builds locked the internal GPU. Put that chip back on its own control once."""
   amd = [card for card in _drm_cards() if card["vendor"] == "0x1002"]
@@ -1380,6 +1432,9 @@ class Plugin:
       err = _apply_cpu_clock(0)
       if err:
         messages.append(err)
+    err = self._restore_cpu_epp()
+    if err:
+      messages.append(err)
     self._arm_cpu_seal()
     return "Success" if not messages else "; ".join(messages)
 
@@ -1413,12 +1468,92 @@ class Plugin:
       parts.append(note)
     if watts is not None:
       parts.append(f"package {watts:.0f}W")
+    epp = _current_cpu_epp()
+    if epp:
+      parts.append(f"boost {epp}")
     if live is not None:
       parts.append(f"live clock {live} MHz")
     if held is not None:
       parts.append(f"clock cap held at {held} MHz")
     parts.append(f"saved cap {self._saved_limit('cpu_tdp_watts')}W / {self._saved_limit('cpu_clock_mhz')} MHz")
     return ". ".join(parts)
+
+  def _efficient_boost_name(self):
+    choices = _cpu_epp_choices()
+    if not choices or "balance_power" in choices:
+      return "balance_power"
+    if "power" in choices:
+      return "power"
+    return ""
+
+  def _hold_cpu_epp(self):
+    """Keep G-Helper's efficient boost applied while a CPU cap is saved."""
+    if self._saved_limit("cpu_tdp_watts") <= 0 and self._saved_limit("cpu_clock_mhz") <= 0:
+      return
+    current = _current_cpu_epp()
+    if not current:
+      if not getattr(self, "_epp_missing_logged", False):
+        self._epp_missing_logged = True
+        _event("Information", "Efficient boost is unavailable. The kernel has no energy preference.")
+      return
+    target = self._efficient_boost_name()
+    if not target:
+      return
+    if _cpu_scaling_driver().startswith("amd-pstate"):
+      for path in _cpu_policy_files("scaling_governor"):
+        governor = _read_text(path)
+        if governor == "performance":
+          if not getattr(self, "_governor_original", ""):
+            self._governor_original = governor
+            if getattr(Plugin, "settings", None):
+              Plugin.settings.setSetting("cpu_governor_saved", governor)
+          err = _write_text(path, "powersave")
+          if err:
+            _event("Error", f"Efficient boost could not set the CPU governor. {err}")
+            return
+    if current != target and not getattr(self, "_epp_original", ""):
+      self._epp_original = current
+      if getattr(Plugin, "settings", None):
+        Plugin.settings.setSetting("cpu_epp_saved", current)
+    err = _apply_cpu_epp(target)
+    if err:
+      if err != getattr(self, "_epp_err", ""):
+        self._epp_err = err
+        _event("Error", f"Efficient boost failed. {err}")
+      return
+    if not getattr(self, "_epp_logged", False):
+      self._epp_logged = True
+      previous = getattr(self, "_epp_original", "") or current
+      _event("Information", f"Efficient boost set to {target}. Previous preference was {previous}.")
+
+  def _restore_cpu_epp(self):
+    """Put the CPU boost preference back after a reset."""
+    previous = getattr(self, "_epp_original", "")
+    governor = getattr(self, "_governor_original", "")
+    if getattr(Plugin, "settings", None):
+      if not previous:
+        previous = str(Plugin.settings.getSetting("cpu_epp_saved", "") or "")
+      if not governor:
+        governor = str(Plugin.settings.getSetting("cpu_governor_saved", "") or "")
+      Plugin.settings.setSetting("cpu_epp_saved", "")
+      Plugin.settings.setSetting("cpu_governor_saved", "")
+    self._epp_original = ""
+    self._epp_logged = False
+    self._governor_original = ""
+    errors = []
+    if previous:
+      err = _apply_cpu_epp(previous)
+      if err:
+        errors.append(err)
+      else:
+        _event("Information", f"Efficient boost restored to {previous}.")
+    if governor:
+      for path in _cpu_policy_files("scaling_governor"):
+        err = _write_text(path, governor)
+        if err:
+          errors.append(err)
+          break
+    return errors[0] if errors else ""
 
   def _arm_cpu_seal(self):
     """The Ally controller clears the CPU boost cap when a watt or clock change lands."""
@@ -1432,6 +1567,7 @@ class Plugin:
     The watt cap is written on a timer, not after reading it: ryzenadj --info
     returns too late, and the chip has already spiked.
     """
+    self._hold_cpu_epp()
     mhz = self._saved_limit("cpu_clock_mhz")
     if mhz > 0:
       err = _apply_cpu_clock(mhz)

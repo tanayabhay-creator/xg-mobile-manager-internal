@@ -460,7 +460,7 @@ export const QuickAccessContent = () => {
           <PanelSectionRow>
             <SliderField
               label="CPU max clock"
-              description="Caps the processor boost clock that is pushing it to 80°C."
+              description="Highest clock the cores may use. Efficient boost lets them sit below this when the frame does not need it."
               value={cpuClock}
               min={Number(limits.cpu_clock_min) || 1400}
               max={Number(limits.cpu_clock_max) || 5000}
@@ -556,7 +556,7 @@ export const QuickAccessContent = () => {
             <PanelSectionRow>
               <ToggleField
                 label="Play on Internal Screen"
-                description="Keep Game Mode on the Ally's built-in display. Games render on the XG Mobile and the picture is sent back to the internal screen. Turn this off to use a monitor plugged into the XG Mobile."
+                description="Keep Game Mode on the Ally's built-in display. Games render on the XG Mobile and the picture is sent back to the internal screen. The panel stays at 120 Hz and the game's real frames are capped at 60, so frame generation can fill 120. Eject and Enable to apply. Turn this off to use a monitor plugged into the XG Mobile."
                 disabled={gpuStatus.active || isLoading}
                 checked={displayTarget === "internal"}
                 onChange={toggleDisplayTarget}
