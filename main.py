@@ -1282,11 +1282,15 @@ class Plugin:
         if time.time() < getattr(self, "_seal_until", 0):
           self._hold_cpu_boost()
           continue
-        if not _game_running():
-          gpu_applied = False
-          hold_ticks = 0
-          continue
         hold_ticks += 1
+        playing = _game_running()
+        if not playing:
+          gpu_applied = False
+          # The surge also happens on the library. Read the cap and write it
+          # back only if the controller cleared it. Do not touch the eGPU here.
+          if hold_ticks % 2 == 0:
+            self._hold_cpu_boost()
+          continue
         # The Ally can reach 106°C in under a second after the cap disappears.
         if hold_ticks % 2 == 0:
           self._hold_cpu_boost()
