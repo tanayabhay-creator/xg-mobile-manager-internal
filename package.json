@@ -2,7 +2,7 @@
   "name": "xgmobile-manager",
   "version": "0.2.14",
   "type": "module",
-  "description": "Manage XG Mobile Ejection, Activation, and NVIDIA Driver Repairs.",
+  "description": "Derivative of Kenny Hood (Kentronix)'s XG Mobile Manager. Adds internal-screen Game Mode and CPU/eGPU power limits.",
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager.git"
+    "url": "git+https://github.com/tanayabhay-creator/xg-mobile-manager-internal.git"
   },
   "keywords": [
     "rog-ally",
@@ -19,13 +19,17 @@
     "egpu"
   ],
   "author": {
-    "name": "Kenny Hood (Kentronix)"
+    "name": "Kenny Hood (Kentronix)",
+    "url": "https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager"
   },
+  "contributors": [
+    "tanayabhay-creator (internal screen, power limits, frame pacing)"
+  ],
   "license": "GPL-3",
   "bugs": {
-    "url": "https://github.com/Kentronix57/Decky-Loader-NVIDIA-XGMobile-Plugin/issues"
+    "url": "https://github.com/tanayabhay-creator/xg-mobile-manager-internal/issues"
   },
-  "homepage": "https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager#readme",
+  "homepage": "https://github.com/tanayabhay-creator/xg-mobile-manager-internal#readme",
   "devDependencies": {
     "@decky/api": "^1.0.5",
     "@decky/rollup": "^1.0.2",

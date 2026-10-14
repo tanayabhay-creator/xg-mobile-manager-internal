@@ -671,12 +671,12 @@ export const QuickAccessContent = () => {
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ opacity: 0.6, fontSize: "0.8em" }}>
-            Original plugin by Kenny Hood (Kentronix)
+            Original plugin by Kenny Hood (Kentronix). This build adds internal screen, power limits, and frame pacing.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ opacity: 0.6, fontSize: "0.8em" }}>
-            Internal screen option by tanayabhay-creator
+            Changes by tanayabhay-creator. GPL-3.
           </div>
         </PanelSectionRow>
       </PanelSection>

@@ -1,6 +1,19 @@
-# XG Mobile Manager for Handheld Linux
+# XG Mobile Manager — internal screen and power limits
 
-> Native, UI-driven support for the ASUS ROG XG Mobile eGPU ecosystem on SteamOS and Bazzite.
+**Derivative work.** This repository is [Kenny Hood (Kentronix)'s XG Mobile Manager](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager), published under GPL-3, plus the changes listed below. The enable and eject design, NVIDIA driver installation, and Decky interface are his. This is not a new plugin and it is not a replacement of his authorship.
+
+Changes on top of his plugin:
+
+- **Play on Internal Screen** — Game Mode stays on the ROG Ally panel while games render on the XG Mobile.
+- **Quiet, Balanced, and Performance** set CPU and XG Mobile watt and clock limits.
+- **Frame pacing** on the internal panel: variable refresh is turned off and frames are handed to gamescope when the copy is finished.
+- **CPU boost** is cut by the watt limit within about a second. 95°C is only a backstop if the firmware clears that limit.
+
+Report problems in those changes here. Report problems in the original enable, eject, and driver installer on [his repository](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager). His donation links are kept below; they are his, not this repository's.
+
+---
+
+> Native, UI-driven support for the ASUS ROG XG Mobile eGPU ecosystem on SteamOS and Bazzite. Original documentation below is Kenny Hood's.
 
 [![SteamOS Compatible](https://img.shields.io/badge/SteamOS-Compatible-1A9FFF)](https://store.steampowered.com/steamos)
 [![Kernel Dynamic](https://img.shields.io/badge/kernel-Dynamic-orange)](https://gitlab.steamos.cloud/jupiter/linux-integration)
@@ -11,7 +24,7 @@
 
 ![XG Mobile Manager UI](assets/images/mainUI.png)
 
-This repository is a modification of [XG Mobile Manager](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager) by **Kenny Hood (Kentronix)**. The original plugin, its driver installation, and the eGPU enable and eject design are his work. This copy adds **Play on Internal Screen**, so Game Mode can stay on the ROG Ally's built-in display while games render on the XG Mobile.
+This repository modifies [XG Mobile Manager](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager) by **Kenny Hood (Kentronix)**. The paragraphs below describe his original plugin. The changes in this repository are listed at the top.
 
 A Decky Loader plugin that brings seamless, UI-driven support for the ASUS ROG XG Mobile eGPU ecosystem to Arch-based handhelds (like the ROG Ally running SteamOS , Bazzite or CachyOS).
 
@@ -40,7 +53,7 @@ This plugin manages the complex hardware handshakes, dynamically compiles and in
 
 * **Beta Software:** This is a community-driven project and is currently in Beta. You are using this at your own risk.
 * **Data Corruption Risk:** This plugin modifies the read-only root filesystem of SteamOS when using NVIDIA only. It compiles kernel modules via DKMS, and manipulates `/etc/environment`. While it uses a highly protective "Bind Mount" architecture to prevent permanent system bricking, unexpected power loss during installation *could* result in a boot loop requiring a SteamOS reinstall.
-* **Sleep/Resume on BazziteOS with NVIDIA forces a Hard Reboot:** When putting the device to sleep with the NVIDIA eGPU active, the GPU cuts power to its Video RAM. Waking the device causes an internal fault on the XG Mobile and triggers the kernel panic. These are caused by upstream issues with the nvidia-open drivers that Bazzite team uses, and my plugin cannot do anything about this. It is recommended to disable sleep when on AC to avoid any complications. If you do find yourself in this scenario, to recover, hold down the power button until the device reboots.
+* **Sleep/Resume on BazziteOS with NVIDIA forces a Hard Reboot:** When putting the device to sleep with the NVIDIA eGPU active, the GPU cuts power to its Video RAM. Waking the device causes an internal fault on the XG Mobile and triggers the kernel panic. These are caused by upstream issues with the nvidia-open drivers that Bazzite team uses, and the original plugin cannot do anything about this. It is recommended to disable sleep when on AC to avoid any complications. If you do find yourself in this scenario, to recover, hold down the power button until the device reboots.
 * **External Display Limitations:** Due to current upstream limitations in `gamescope`, **4K/8K and UltraWide resolutions may not function correctly in Game Mode**. 1080p and 1440p are generally stable with the width being 2560p or less. Desktop Mode provides wider resolution support (Wayland and X11).
 * **Power Profile overwritten by other TDP controllers:** Other TDP controls (like SimpleDeckyTDP and HHD) will override the setting of the Power Profile. Use the dropdown in this app to monitor what the current power profile is (this plugin pings the xg mobile every 3 seconds to determine the current Power Profile setting).
 
@@ -137,8 +150,8 @@ If you wish to contribute or build the plugin from your own development environm
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager.git
-   cd Decky-Loader-XGMobile-Manager
+   git clone https://github.com/tanayabhay-creator/xg-mobile-manager-internal.git
+   cd xg-mobile-manager-internal
    ```
 2. Install dependencies (requires Node.js and pnpm):
    ```bash
@@ -182,18 +195,16 @@ The output of your corresponding logs. (IE. enable, eject, etc.)
 
 Please use GitHub Issues rather than Reddit DMs for technical support so the community can benefit from the solutions!
 
-## ☕ Buy Me a Coffee
-This plugin required countless hours of kernel-level debugging, file system reverse-engineering, and risk to my personal hardware to build. I offer it completely free and open-source.
-
-If this tool saved you hours of troubleshooting or finally made your portable eGPU setup viable, consider buying me a coffee or an energy drink to keep the updates coming!
+## ☕ Support the original author
+Kenny Hood (Kentronix) built the original plugin: the kernel work, the driver installer, and the enable and eject design. He offers that work free under GPL-3. These links are his.
 
 **[(Buy me a coffee)](https://buymeacoffee.com/kentronix)**
 
 **[(Ko-Fi)](https://ko-fi.com/kentronix)**
 
 ## 🏆 Credits
-* **Original plugin, architecture, and maintenance:** Kenny Hood ([Kentronix](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager))
-* **Play on Internal Screen:** [tanayabhay-creator](https://github.com/tanayabhay-creator/xg-mobile-manager-internal), built on top of that original plugin
+* **Original plugin, architecture, and maintenance:** Kenny Hood ([Kentronix](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager)). Copyright remains his under GPL-3.
+* **Changes in this repository** (internal screen, watt and clock limits, frame pacing, CPU boost cap): [tanayabhay-creator](https://github.com/tanayabhay-creator/xg-mobile-manager-internal)
 * Protocol reverse engineering: [osy/XG_Mobile_Station](https://github.com/osy/XG_Mobile_Station)
 * asus-linux kernel patches: [asus-linux.org](https://asus-linux.org)
 * Valve for shipping the SteamOS kernel with `asus-wmi` + `egpu_enable`

@@ -1,6 +1,6 @@
 {
   "name": "XGMobile-Manager",
-  "author": "Kenny Hood (Kentronix)",
+  "author": "Kenny Hood (Kentronix); changes by tanayabhay-creator",
   "flags": ["debug", "root"],
   "api_version": 2,
   "main": "dist/index.js",
@@ -8,6 +8,6 @@
   "python_src": "main.py",
   "publish": {
     "tags": ["eGPU", "NVIDIA", "AMD", "XGMobile", "ROG-Ally", "Flow", "ASUS"],
-    "description": "Based on Kenny Hood (Kentronix)'s XG Mobile Manager. Adds Play on Internal Screen."
+    "description": "Derivative of Kenny Hood (Kentronix)'s XG Mobile Manager. Adds internal-screen Game Mode and CPU/eGPU power limits."
   }
 }

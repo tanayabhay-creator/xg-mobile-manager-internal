@@ -1,0 +1,12 @@
+XG Mobile Manager
+
+Original work copyright Kenny Hood (Kentronix)
+https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager
+Licensed under GNU GPL-3. See LICENSE.
+
+This repository is that plugin with later changes by tanayabhay-creator:
+internal-screen Game Mode, CPU and XG Mobile power and clock limits,
+internal-screen frame pacing, and a short CPU boost cap.
+
+Those changes are also GPL-3. The original enable, eject, and NVIDIA
+driver installer remain Kenny Hood's work.
