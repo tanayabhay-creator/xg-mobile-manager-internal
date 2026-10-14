@@ -146,7 +146,6 @@ apply_display_config() {
   # later file was turning variable refresh back on after the old 10- file.
   local display_conf="/home/$PRIMARY_USER/.config/environment.d/zz-xgmobile-display.conf"
   local old_conf="/home/$PRIMARY_USER/.config/environment.d/10-xgmobile-display.conf"
-  local settings_json preset frame_cap
   collect_display_facts
   mkdir -p "$DATA_DIR"
   printf "%s\n" "$DISPLAY_TARGET" > "$DATA_DIR/display_target"
@@ -156,19 +155,6 @@ apply_display_config() {
     rm -f "$display_conf"
     echo "Display target: monitor connected to the XG Mobile."
     return
-  fi
-
-  settings_json="$(readlink -f "$DATA_DIR/../../settings/xgmobile-manager/settings.json" 2>/dev/null || true)"
-  preset=""
-  if [ -f "$settings_json" ]; then
-    preset=$(sed -n 's/.*"power_preset"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$settings_json" | head -n 1)
-  fi
-  # 60 is half of the Ally's 120 Hz panel, which is what Lossless Scaling 2x needs.
-  # Performance stays uncapped for games that can hold 120 on their own.
-  if [ "$preset" = "performance" ]; then
-    frame_cap=0
-  else
-    frame_cap=60
   fi
 
   mkdir -p "$(dirname "$display_conf")"
@@ -188,14 +174,12 @@ apply_display_config() {
       echo "__GL_SYNC_TO_VBLANK=0"
       echo "__GL_MaxFramesAllowed=2"
     fi
-    # Empty, not 0. Gamescope turns variable refresh on for any non-empty value,
-    # and the Ally panel doubles frames that fall under 48 Hz (46 shows up as 92).
+    # Empty, not 0. Gamescope turns variable refresh on for any non-empty value.
+    # Do not cap the game here, and do not shrink the swapchain queue: the frame
+    # still has to be copied back to the Ally panel, and a 1-frame queue freezes.
     echo "ADAPTIVE_SYNC="
     echo "unset STEAM_DISPLAY_REFRESH_LIMITS"
     echo "vk_xwayland_wait_ready=true"
-    echo "VKD3D_SWAPCHAIN_LATENCY_FRAMES=1"
-    echo "VKD3D_FRAME_RATE=$frame_cap"
-    echo "DXVK_FRAME_RATE=$frame_cap"
   } > "$display_conf"
   chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
   chmod 644 "$display_conf"

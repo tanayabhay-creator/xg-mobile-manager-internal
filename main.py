@@ -153,13 +153,16 @@ def _apply_nvidia_clock(mhz):
   if int(mhz) <= 0:
     result = _run_cmd([smi, "-rgc"])
   else:
-    # Pin the clock. A window under the cap lets the card boost and fall, and the
-    # Ally panel then doubles those dips (about 46 becomes 92).
+    # Ceiling, with room to ease down. Pinning min=max makes the driver stall
+    # when the chip cannot hold that clock, which freezes the frame.
     cap = int(mhz)
+    floor = max(300, int(cap * 0.85))
+    if floor > cap:
+      floor = cap
     current = _nvidia_locked_clock()
-    if current is not None and abs(current - cap) <= 15:
+    if current is not None and abs(current - cap) <= 30:
       return ""
-    result = _run_cmd([smi, "-lgc", f"{cap},{cap}"])
+    result = _run_cmd([smi, "-lgc", f"{floor},{cap}"])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "Failed to set the GPU clock limit").strip()
   return ""
@@ -286,8 +289,8 @@ def _apply_ryzenadj_tdp(watts):
   ])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "ryzenadj failed").strip()
-  # The medium window is 1 second, so a boost cannot keep running while the die heats up.
-  _run_cmd([tool, "--slow-time=1", "--stapm-time=5"])
+  # One second is the shortest window ryzenadj accepts. A failed time write must not undo the watt cap.
+  _run_cmd([tool, "--slow-time=1", "--stapm-time=1"])
   return ""
 
 def _apply_cpu_thermal_limit():
@@ -300,15 +303,31 @@ def _apply_cpu_thermal_limit():
     return (result.stderr or result.stdout or "Could not set the CPU temperature limit").strip()
   return ""
 
-def _ryzenadj_current():
+def _ryzenadj_watts(value):
+  value = float(value)
+  if value > 500:
+    value = value / 1000.0
+  return value
+
+def _ryzenadj_limits():
+  """Live stapm/fast/slow caps in watts. None when ryzenadj cannot be read."""
   tool = _which("ryzenadj")
   if not tool:
-    return 0
+    return None
   result = _run_cmd([tool, "--info"])
-  match = re.search(r"STAPM LIMIT\s*\|\s*([0-9.]+)", result.stdout or "")
-  if not match:
+  text = result.stdout or ""
+  found = {}
+  for key, label in (("stapm", "STAPM LIMIT"), ("fast", "PPT LIMIT FAST"), ("slow", "PPT LIMIT SLOW")):
+    match = re.search(rf"{label}\s*\|\s*([0-9.]+)", text)
+    if match:
+      found[key] = _ryzenadj_watts(match.group(1))
+  return found or None
+
+def _ryzenadj_current():
+  limits = _ryzenadj_limits()
+  if not limits or "stapm" not in limits:
     return 0
-  return int(float(match.group(1)))
+  return int(limits["stapm"])
 
 def _cpu_tdp_bounds():
   info = _armoury_tdp_info()
@@ -389,8 +408,7 @@ def _restore_igpu_automatic():
     if os.path.exists(level) and _read_text(level) not in ("", "auto"):
       _write_text(level, "auto")
 
-# The watt cap stays above the locked clock. A tighter watt cap pulls the clock
-# down under load, the frame rate falls through 48, and variable refresh doubles it.
+# Watt headroom stays above the clock cap so the GPU is not throttled mid-frame.
 POWER_PRESETS = {
   "quiet": {"gpu_power_ratio": 0.80, "gpu_clock_ratio": 0.65, "cpu_tdp": 18, "cpu_clock": 3800, "gpu_power_fallback": 120},
   "balanced": {"gpu_power_ratio": 0.92, "gpu_clock_ratio": 0.80, "cpu_tdp": 22, "cpu_clock": 4200, "gpu_power_fallback": 140},
@@ -1134,7 +1152,6 @@ class Plugin:
     messages = []
     gpu_power = self._saved_limit("gpu_power_watts")
     gpu_clock = self._saved_limit("gpu_clock_mhz")
-    cpu_tdp = self._saved_limit("cpu_tdp_watts")
     cpu_clock = self._saved_limit("cpu_clock_mhz")
     source = _gpu_limit_source() if gpu_power > 0 or gpu_clock > 0 else {"kind": "none", "power": None, "clock": None}
     if gpu_power > 0:
@@ -1150,17 +1167,12 @@ class Plugin:
       err = _apply_nvidia_clock(gpu_clock)
       if err:
         messages.append(err)
-    if cpu_tdp > 0:
-      err = _apply_cpu_tdp(cpu_tdp)
-      if err:
-        messages.append(err)
     if cpu_clock > 0:
       err = _apply_cpu_clock(cpu_clock)
       if err:
         messages.append(err)
-    err = _apply_cpu_thermal_limit()
-    if err:
-      messages.append(err)
+    # CPU watts are owned by _hold_cpu_boost. Rewriting the ASUS attributes on
+    # a timer is what makes the firmware drop the boost cap.
     _note_limit_error("; ".join(messages))
     return "Success" if not messages else "; ".join(messages)
 
@@ -1234,14 +1246,30 @@ class Plugin:
     return "Success" if not messages else "; ".join(messages)
 
   async def _hold_cpu_boost(self):
-    """End the boost at the watt cap. 95°C is only used if that cap is missing."""
+    """Put the watt cap back only when firmware has cleared it.
+
+    Writing the ASUS attributes every second makes the embedded controller drop
+    the fast limit. The cores then boost without a cap, the hotspot hits about
+    106°C, and the game freezes until the clocks recover.
+    """
     watts = self._saved_limit("cpu_tdp_watts")
-    if watts <= 0:
-      watts = _ryzenadj_current()
-    if 8 <= watts <= 54:
-      err = _apply_cpu_tdp(watts)
-      if err:
-        _note_limit_error(err)
+    limits = _ryzenadj_limits()
+    if watts <= 0 and limits and limits.get("stapm"):
+      stapm = int(round(limits["stapm"]))
+      if 8 <= stapm <= 54:
+        watts = stapm
+    if watts <= 0 or not limits:
+      return
+    present = [limits.get(name) for name in ("fast", "slow", "stapm")]
+    present = [value for value in present if value is not None]
+    if not present:
+      return
+    if not any(value <= 0 or value > watts + 2 for value in present):
+      return
+    err = _apply_ryzenadj_tdp(watts)
+    if err:
+      _note_limit_error(err)
+      return
     err = _apply_cpu_thermal_limit()
     if err:
       _note_limit_error(err)
@@ -1250,6 +1278,16 @@ class Plugin:
     try:
       if getattr(Plugin, "settings", None):
         Plugin.settings.setSetting("igpu_clock_mhz", 0)
+        revision = 0
+        try:
+          revision = int(float(Plugin.settings.getSetting("preset_revision", 0) or 0))
+        except Exception:
+          revision = 0
+        if revision != 3:
+          name = str(Plugin.settings.getSetting("power_preset", "") or "")
+          if name:
+            await self.set_power_profile(name)
+          Plugin.settings.setSetting("preset_revision", 3)
       _restore_igpu_automatic()
       await self.apply_saved_limits()
       await self._hold_cpu_boost()
@@ -1257,11 +1295,11 @@ class Plugin:
       _note_limit_error(str(exc))
     tick = 0
     while True:
-      await asyncio.sleep(1)
+      await asyncio.sleep(0.25)
       tick += 1
       try:
         await self._hold_cpu_boost()
-        if tick % 5 == 0:
+        if tick % 20 == 0:
           await self.apply_saved_limits()
       except Exception as exc:
         _note_limit_error(str(exc))

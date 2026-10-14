@@ -1,6 +1,6 @@
 {
   "name": "xgmobile-manager",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "type": "module",
   "description": "Derivative of Kenny Hood (Kentronix)'s XG Mobile Manager. Adds internal-screen Game Mode and CPU/eGPU power limits.",
   "scripts": {
