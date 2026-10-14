@@ -177,7 +177,7 @@ if [ "$SUCCESS" -eq 0 ]; then
   echo "WARNING: Hardware did not seem to drop from /dev/dri/. Proceeding anyway to restore UI."
 fi
 
-rm -f "/home/$PRIMARY_USER/.config/environment.d/10-xgmobile-display.conf"
+rm -f "/home/$PRIMARY_USER/.config/environment.d/10-xgmobile-display.conf" "/home/$PRIMARY_USER/.config/environment.d/zz-xgmobile-display.conf"
 if [ -n "$DATA_DIR" ]; then
   mkdir -p "$DATA_DIR"
   echo "external" > "$DATA_DIR/display_target"

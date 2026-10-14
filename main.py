@@ -131,6 +131,21 @@ def _apply_nvidia_power(watts):
     return (result.stderr or result.stdout or "Failed to set the GPU power limit").strip()
   return ""
 
+def _nvidia_locked_clock():
+  smi = _which("nvidia-smi")
+  if not smi:
+    return None
+  result = _run_cmd([smi, "--query-gpu=clocks.applications.graphics", "--format=csv,noheader,nounits"])
+  if result.returncode != 0 or not result.stdout.strip():
+    return None
+  text = result.stdout.strip().splitlines()[0].strip()
+  if not text or text.upper() == "N/A":
+    return None
+  try:
+    return int(float(text))
+  except Exception:
+    return None
+
 def _apply_nvidia_clock(mhz):
   smi = _which("nvidia-smi")
   if not smi:
@@ -138,12 +153,13 @@ def _apply_nvidia_clock(mhz):
   if int(mhz) <= 0:
     result = _run_cmd([smi, "-rgc"])
   else:
-    # Keep the clock close to the cap. A 500 MHz floor makes frame times jump.
+    # Pin the clock. A window under the cap lets the card boost and fall, and the
+    # Ally panel then doubles those dips (about 46 becomes 92).
     cap = int(mhz)
-    floor = max(300, cap - 150)
-    if floor > cap:
-      floor = cap
-    result = _run_cmd([smi, "-lgc", f"{floor},{cap}"])
+    current = _nvidia_locked_clock()
+    if current is not None and abs(current - cap) <= 15:
+      return ""
+    result = _run_cmd([smi, "-lgc", f"{cap},{cap}"])
   if result.returncode != 0:
     return (result.stderr or result.stdout or "Failed to set the GPU clock limit").strip()
   return ""
@@ -373,10 +389,12 @@ def _restore_igpu_automatic():
     if os.path.exists(level) and _read_text(level) not in ("", "auto"):
       _write_text(level, "auto")
 
+# The watt cap stays above the locked clock. A tighter watt cap pulls the clock
+# down under load, the frame rate falls through 48, and variable refresh doubles it.
 POWER_PRESETS = {
-  "quiet": {"gpu_power_ratio": 0.50, "gpu_clock_ratio": 0.65, "cpu_tdp": 13, "cpu_clock": 3200, "gpu_power_fallback": 80},
-  "balanced": {"gpu_power_ratio": 0.68, "gpu_clock_ratio": 0.82, "cpu_tdp": 18, "cpu_clock": 3800, "gpu_power_fallback": 110},
-  "performance": {"gpu_power_ratio": 0.82, "gpu_clock_ratio": 1.0, "cpu_tdp": 25, "cpu_clock": 4600, "gpu_power_fallback": 140},
+  "quiet": {"gpu_power_ratio": 0.80, "gpu_clock_ratio": 0.65, "cpu_tdp": 18, "cpu_clock": 3800, "gpu_power_fallback": 120},
+  "balanced": {"gpu_power_ratio": 0.92, "gpu_clock_ratio": 0.80, "cpu_tdp": 22, "cpu_clock": 4200, "gpu_power_fallback": 140},
+  "performance": {"gpu_power_ratio": 1.0, "gpu_clock_ratio": 0.90, "cpu_tdp": 25, "cpu_clock": 4600, "gpu_power_fallback": 150},
 }
 
 def _clamp_step(value, low, high, step):

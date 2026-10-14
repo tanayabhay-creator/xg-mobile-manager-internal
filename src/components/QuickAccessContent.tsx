@@ -355,7 +355,7 @@ export const QuickAccessContent = () => {
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
-            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power without the uncapped temperatures.
+            Quiet and Balanced cap the game at 60 fps and pin the XG Mobile clock, so Lossless Scaling at 2x holds 120 instead of jumping between 48 and 92. Performance leaves the frame rate uncapped. Eject and Enable once after changing this.
           </div>
           <Dropdown
             selectedOption={powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? powerProfile : "Balanced"}
