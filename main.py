@@ -50,7 +50,7 @@ def error(txt):
 
 def _event(level, message):
   """One timestamped line, flushed so a hard reset still leaves the record."""
-  line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {level:<11}  {message}\n"
+  line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}  {level:<11}  {message}\n"
   try:
     os.makedirs(LOG_DIR, exist_ok=True)
     with _event_lock:
@@ -58,9 +58,9 @@ def _event(level, message):
         handle.write(line)
         handle.flush()
         os.fsync(handle.fileno())
-      if os.path.getsize(EVENT_LOG) > 120000:
+      if os.path.getsize(EVENT_LOG) > 250000:
         with open(EVENT_LOG, "r", encoding="utf-8", errors="replace") as handle:
-          kept = handle.readlines()[-400:]
+          kept = handle.readlines()[-800:]
         with open(EVENT_LOG, "w", encoding="utf-8") as handle:
           handle.writelines(kept)
           handle.flush()
@@ -416,37 +416,74 @@ def _game_running():
 def _cpu_freq_files(name):
   return glob.glob(f"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/{name}")
 
-_k10temp_path = ""
+_cached_temp_paths = None
+_energy_path = ""
+_freq_cur_files = None
+_freq_max_files = None
+
+def _temp_paths():
+  """CPU and iGPU temperature files. The eGPU is NVIDIA and is not in this list."""
+  global _cached_temp_paths
+  if _cached_temp_paths is not None:
+    return _cached_temp_paths
+  paths = []
+  for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
+    if _read_text(name_path) not in ("k10temp", "amdgpu"):
+      continue
+    paths.extend(glob.glob(os.path.join(os.path.dirname(name_path), "temp*_input")))
+  _cached_temp_paths = paths
+  return paths
 
 def _cpu_temp_c():
-  """Package temperature from k10temp. None when the sensor is missing."""
-  global _k10temp_path
-  if not _k10temp_path:
-    for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
-      if _read_text(name_path) != "k10temp":
-        continue
-      candidate = os.path.join(os.path.dirname(name_path), "temp1_input")
-      if os.path.exists(candidate):
-        _k10temp_path = candidate
+  """Highest live CPU or iGPU temperature. None when no sensor can be read."""
+  hottest = None
+  for path in _temp_paths():
+    try:
+      value = int(_read_text(path)) / 1000.0
+    except Exception:
+      continue
+    if hottest is None or value > hottest:
+      hottest = value
+  return hottest
+
+def _package_energy_uj():
+  """Package energy counter in microjoules. None when the kernel does not expose one."""
+  global _energy_path
+  if not _energy_path:
+    for path in glob.glob("/sys/class/powercap/intel-rapl*/energy_uj") + glob.glob("/sys/class/powercap/intel-rapl*/*/energy_uj"):
+      if _read_text(os.path.join(os.path.dirname(path), "name")) in ("package-0", "package"):
+        _energy_path = path
         break
-  if not _k10temp_path:
+    if not _energy_path:
+      for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
+        if _read_text(name_path) != "amd_energy":
+          continue
+        candidate = os.path.join(os.path.dirname(name_path), "energy1_input")
+        if os.path.exists(candidate):
+          _energy_path = candidate
+          break
+    if not _energy_path:
+      _energy_path = "-"
+  if _energy_path == "-":
     return None
   try:
-    return int(_read_text(_k10temp_path)) / 1000.0
+    return int(_read_text(_energy_path))
   except Exception:
     return None
 
 def _cpu_live_mhz():
   """Highest live core clock, and the cap currently held, in MHz."""
+  global _freq_cur_files, _freq_max_files
   live = None
   held = None
   try:
-    current = _cpu_freq_files("scaling_cur_freq")
-    if current:
-      live = max(int(_read_text(path) or 0) for path in current) // 1000
-    cap = _cpu_freq_files("scaling_max_freq")
-    if cap:
-      held = int(_read_text(cap[0]) or 0) // 1000
+    if _freq_cur_files is None:
+      _freq_cur_files = _cpu_freq_files("scaling_cur_freq")
+      _freq_max_files = _cpu_freq_files("scaling_max_freq")
+    if _freq_cur_files:
+      live = max(int(_read_text(path) or 0) for path in _freq_cur_files) // 1000
+    if _freq_max_files:
+      held = int(_read_text(_freq_max_files[0]) or 0) // 1000
   except Exception:
     return None, None
   return live, held
@@ -1346,7 +1383,25 @@ class Plugin:
     self._arm_cpu_seal()
     return "Success" if not messages else "; ".join(messages)
 
-  def _cpu_fast_line(self, temp, note=""):
+  def _package_watts(self):
+    """Watts since the previous sample, from the package energy counter."""
+    now = time.time()
+    uj = _package_energy_uj()
+    prev_uj = getattr(self, "_energy_uj", None)
+    prev_at = getattr(self, "_energy_at", None)
+    watts = None
+    if uj is not None:
+      if prev_uj is not None and prev_at is not None:
+        dt = now - prev_at
+        if dt >= 0.02:
+          watts = (uj - prev_uj) / dt / 1000000.0
+          if watts < 0 or watts > 200:
+            watts = None
+      self._energy_uj = uj
+      self._energy_at = now
+    return watts
+
+  def _cpu_fast_line(self, temp, note="", watts=None):
     live, held = _cpu_live_mhz()
     where = "in a game" if _game_running() else "on the library"
     parts = []
@@ -1356,6 +1411,8 @@ class Plugin:
       parts.append(f"CPU {temp:.0f}C {where}")
     if note:
       parts.append(note)
+    if watts is not None:
+      parts.append(f"package {watts:.0f}W")
     if live is not None:
       parts.append(f"live clock {live} MHz")
     if held is not None:
@@ -1413,18 +1470,65 @@ class Plugin:
     refreshed = False
     hold_ticks = 0
     prev_temp = None
-    last_temp_event = 0.0
+    last_spike_log = 0.0
     last_heartbeat = 0.0
+    last_limits = 0.0
+    last_loop = 0.0
     hot = False
     saw_game = None
     _event(
       "Information",
       f"Power watch started. Saved CPU {self._saved_limit('cpu_tdp_watts')}W, "
-      f"clock {self._saved_limit('cpu_clock_mhz')} MHz. Log: {EVENT_LOG}",
+      f"clock {self._saved_limit('cpu_clock_mhz')} MHz. "
+      f"Temperature sensors {len(_temp_paths())}. "
+      f"Package energy {'missing' if _package_energy_uj() is None else _energy_path}.",
     )
     while not self._limit_stop.is_set():
       try:
         hold_ticks += 1
+        now = time.time()
+        if last_loop and now - last_loop >= 0.5:
+          _event("Warning", f"Watch loop stalled for {now - last_loop:.2f}s.")
+        last_loop = now
+        # Sample before ryzenadj. The temperature file lags a 106C spike, and a
+        # stalled read would freeze the Ally before the old 30s line was written.
+        temp = _cpu_temp_c()
+        live, held = _cpu_live_mhz()
+        pkg = self._package_watts()
+        saved_w = self._saved_limit("cpu_tdp_watts")
+        power_limit = saved_w if saved_w > 0 else 30
+        jump = 0.0 if prev_temp is None or temp is None else temp - prev_temp
+        if temp is not None:
+          prev_temp = temp
+        over_clock = live is not None and held is not None and held > 0 and live > held + 150
+        over_power = pkg is not None and pkg > power_limit + 10
+        temp_hot = temp is not None and (temp >= 90 or jump >= 5)
+        if (over_clock or over_power or temp_hot) and now - last_spike_log >= 0.25:
+          notes = []
+          if over_power:
+            notes.append(f"package power above {power_limit:.0f}W")
+          if jump >= 5:
+            notes.append(f"rose {jump:.0f}C since the last sample")
+          if over_clock:
+            notes.append("live clock is above the cap")
+          severe = (temp is not None and temp >= 100) or (pkg is not None and pkg > power_limit + 25) or (live is not None and held is not None and held > 0 and live > held + 500)
+          level = "Error" if severe else "Warning"
+          first = not hot
+          hot = True
+          last_spike_log = now
+          _event(level, self._cpu_fast_line(temp, ". ".join(notes), pkg))
+          if first:
+            _event(level, _ryzenadj_limits_line())
+        elif hot and not over_clock and not over_power and (temp is None or temp < 85) and now - last_spike_log >= 0.25:
+          hot = False
+          last_spike_log = now
+          _event("Information", self._cpu_fast_line(temp, "cooled down", pkg))
+        elif now - last_heartbeat >= 2 and now - last_spike_log >= 1:
+          last_heartbeat = now
+          _event("Information", self._cpu_fast_line(temp, "sample", pkg))
+          if now - last_limits >= 10:
+            last_limits = now
+            _event("Information", _ryzenadj_limits_line())
         # Clock cap every pass. Watt cap once a second so the library is not
         # hammering the CPU controller, which is what froze Quick Access before.
         full = hold_ticks % 20 == 1
@@ -1435,39 +1539,6 @@ class Plugin:
         elif playing != saw_game:
           saw_game = playing
           _event("Information", "Game opened." if playing else "Back on the library.")
-        if hold_ticks % 10 == 0:
-          now = time.time()
-          temp = _cpu_temp_c()
-          live, held = _cpu_live_mhz()
-          jump = 0.0 if prev_temp is None or temp is None else temp - prev_temp
-          if temp is not None:
-            prev_temp = temp
-          over = live is not None and held is not None and held > 0 and live > held + 150
-          temp_hot = temp is not None and (temp >= 95 or jump >= 8)
-          if temp_hot and now - last_temp_event >= 1:
-            notes = []
-            if jump >= 8:
-              notes.append(f"rose {jump:.0f}C since the last sample")
-            if over:
-              notes.append("live clock is above the cap")
-            level = "Error" if temp is not None and temp >= 100 else "Warning"
-            first = not hot
-            hot = True
-            last_temp_event = now
-            _event(level, self._cpu_fast_line(temp, ". ".join(notes)))
-            if first:
-              _event(level, _ryzenadj_limits_line())
-          elif over and now - last_temp_event >= 5:
-            last_temp_event = now
-            _event("Warning", self._cpu_fast_line(temp, "live clock is above the cap"))
-          elif hot and temp is not None and temp < 90 and not over and now - last_temp_event >= 1:
-            hot = False
-            last_temp_event = now
-            _event("Information", self._cpu_fast_line(temp, "cooled down"))
-          elif temp is not None and now - last_heartbeat >= 30 and now - last_temp_event >= 5:
-            last_heartbeat = now
-            _event("Information", self._cpu_fast_line(temp, "steady"))
-            _event("Information", _ryzenadj_limits_line())
         if not playing:
           gpu_applied = False
         else:
@@ -1490,7 +1561,11 @@ class Plugin:
             self.apply_saved_limits()
             gpu_applied = True
       except Exception as exc:
-        _note_limit_error(str(exc))
+        message = str(exc)
+        _note_limit_error(message)
+        if message != getattr(self, "_watch_err", ""):
+          self._watch_err = message
+          _event("Error", f"Power watch failed. {message}")
       if self._limit_stop.wait(0.05):
         return
 
