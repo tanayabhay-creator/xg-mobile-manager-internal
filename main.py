@@ -34,6 +34,8 @@ UNINSTALL_LOG = os.path.join(LOG_DIR, "xgmobile_manager_uninstall.log")
 SHORTCUTS_LOG = os.path.join(LOG_DIR, "xgmobile_manager_create_shortcuts.log")
 SYNC_LOG = os.path.join(LOG_DIR, "xgmobile_manager_boot_sync.log")
 PYTHONERROR_LOG = os.path.join(LOG_DIR, "xgmobile_manager_python_crash.log")
+EVENT_LOG = os.path.join(LOG_DIR, "xgmobile_manager_events.log")
+_event_lock = threading.Lock()
 
 os.makedirs(os.path.join(DATA_DIR, "configs"), exist_ok=True)
 
@@ -45,6 +47,26 @@ def warn(txt):
 
 def error(txt):
   decky.logger.error(txt)
+
+def _event(level, message):
+  """One timestamped line, flushed so a hard reset still leaves the record."""
+  line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {level:<11}  {message}\n"
+  try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    with _event_lock:
+      with open(EVENT_LOG, "a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+      if os.path.getsize(EVENT_LOG) > 120000:
+        with open(EVENT_LOG, "r", encoding="utf-8", errors="replace") as handle:
+          kept = handle.readlines()[-400:]
+        with open(EVENT_LOG, "w", encoding="utf-8") as handle:
+          handle.writelines(kept)
+          handle.flush()
+          os.fsync(handle.fileno())
+  except Exception:
+    pass
 
 def _clean_env():
   env = os.environ.copy()
@@ -295,19 +317,56 @@ def _ryzenadj_watts(value):
     value = value / 1000.0
   return value
 
+def _ryzenadj_table(text):
+  found = {}
+  for key, label in (
+    ("stapm", "STAPM LIMIT"),
+    ("stapm_value", "STAPM VALUE"),
+    ("fast", "PPT LIMIT FAST"),
+    ("fast_value", "PPT VALUE FAST"),
+    ("slow", "PPT LIMIT SLOW"),
+    ("slow_value", "PPT VALUE SLOW"),
+    ("tctl", "THM LIMIT CORE"),
+    ("tctl_value", "THM VALUE CORE"),
+  ):
+    match = re.search(rf"{re.escape(label)}\s*\|\s*([0-9.]+)", text or "")
+    if not match:
+      match = re.search(rf"{re.escape(label)}\s*[:=]\s*([0-9.]+)", text or "")
+    if match:
+      found[key] = _ryzenadj_watts(match.group(1))
+  return found
+
 def _ryzenadj_limits():
   """Live stapm/fast/slow caps in watts. None when ryzenadj cannot be read."""
   tool = _which("ryzenadj")
   if not tool:
     return None
   result = _run_cmd([tool, "--info"])
-  text = result.stdout or ""
-  found = {}
-  for key, label in (("stapm", "STAPM LIMIT"), ("fast", "PPT LIMIT FAST"), ("slow", "PPT LIMIT SLOW")):
-    match = re.search(rf"{label}\s*\|\s*([0-9.]+)", text)
-    if match:
-      found[key] = _ryzenadj_watts(match.group(1))
-  return found or None
+  found = _ryzenadj_table(result.stdout or "")
+  kept = {key: found[key] for key in ("stapm", "fast", "slow") if key in found}
+  return kept or None
+
+def _ryzenadj_limits_line():
+  tool = _which("ryzenadj")
+  if not tool:
+    return "Ryzenadj is not installed."
+  result = _run_cmd([tool, "--info"], timeout=0.8)
+  found = _ryzenadj_table(result.stdout or "")
+  if not found:
+    detail = (result.stderr or result.stdout or "no output").strip().replace("\n", " ")
+    return f"Ryzenadj limits could not be read. {detail[:180]}"
+  labels = (
+    ("stapm", "STAPM limit"),
+    ("stapm_value", "STAPM value"),
+    ("fast", "fast limit"),
+    ("fast_value", "fast value"),
+    ("slow", "slow limit"),
+    ("slow_value", "slow value"),
+    ("tctl", "temp limit"),
+    ("tctl_value", "temp"),
+  )
+  parts = [f"{label} {found[key]:.1f}" for key, label in labels if key in found]
+  return "Ryzenadj " + ", ".join(parts)
 
 def _ryzenadj_current():
   limits = _ryzenadj_limits()
@@ -356,6 +415,41 @@ def _game_running():
 
 def _cpu_freq_files(name):
   return glob.glob(f"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/{name}")
+
+_k10temp_path = ""
+
+def _cpu_temp_c():
+  """Package temperature from k10temp. None when the sensor is missing."""
+  global _k10temp_path
+  if not _k10temp_path:
+    for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
+      if _read_text(name_path) != "k10temp":
+        continue
+      candidate = os.path.join(os.path.dirname(name_path), "temp1_input")
+      if os.path.exists(candidate):
+        _k10temp_path = candidate
+        break
+  if not _k10temp_path:
+    return None
+  try:
+    return int(_read_text(_k10temp_path)) / 1000.0
+  except Exception:
+    return None
+
+def _cpu_live_mhz():
+  """Highest live core clock, and the cap currently held, in MHz."""
+  live = None
+  held = None
+  try:
+    current = _cpu_freq_files("scaling_cur_freq")
+    if current:
+      live = max(int(_read_text(path) or 0) for path in current) // 1000
+    cap = _cpu_freq_files("scaling_max_freq")
+    if cap:
+      held = int(_read_text(cap[0]) or 0) // 1000
+  except Exception:
+    return None, None
+  return live, held
 
 def _cpu_clock_info():
   max_files = _cpu_freq_files("cpuinfo_max_freq")
@@ -1068,6 +1162,7 @@ class Plugin:
       summary += " The XG Mobile cap applies after you enable it."
     if messages:
       summary += " " + "; ".join(messages)
+    _event("Information", summary)
     return summary
 
   def _saved_limit(self, key):
@@ -1175,8 +1270,10 @@ class Plugin:
       err = ""
     self._arm_cpu_seal()
     if err:
+      _event("Error", f"eGPU power limit {watts}W failed. {err}")
       return err
     Plugin.settings.setSetting("gpu_power_watts", watts)
+    _event("Information", f"eGPU power limit set to {watts}W.")
     return "Success"
 
   async def set_gpu_clock_limit(self, mhz):
@@ -1189,18 +1286,22 @@ class Plugin:
       err = _apply_nvidia_clock(mhz)
       if err:
         self._arm_cpu_seal()
+        _event("Error", f"eGPU clock limit {mhz} MHz failed. {err}")
         return err
     self._arm_cpu_seal()
     Plugin.settings.setSetting("gpu_clock_mhz", mhz)
+    _event("Information", f"eGPU clock limit set to {mhz} MHz.")
     return "Success"
 
   async def set_cpu_tdp(self, watts):
     watts = _as_int(watts)
     err = _apply_cpu_tdp(watts)
     if err:
+      _event("Error", f"CPU power limit {watts}W failed. {err}")
       return err
     Plugin.settings.setSetting("cpu_tdp_watts", watts)
     self._arm_cpu_seal()
+    _event("Information", f"CPU power limit set to {watts}W.")
     return "Success"
 
   async def set_cpu_clock_limit(self, mhz):
@@ -1209,11 +1310,14 @@ class Plugin:
     err = _apply_cpu_clock(mhz)
     self._arm_cpu_seal()
     if err:
+      _event("Error", f"CPU clock limit {mhz} MHz failed. {err}")
       return err
     Plugin.settings.setSetting("cpu_clock_mhz", mhz)
+    _event("Information", f"CPU clock limit set to {mhz} MHz.")
     return "Success"
 
   async def reset_power_limits(self):
+    _event("Information", "Power limits reset.")
     for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz", "power_preset"):
       Plugin.settings.setSetting(key, 0 if key != "power_preset" else "")
     messages = []
@@ -1242,6 +1346,23 @@ class Plugin:
     self._arm_cpu_seal()
     return "Success" if not messages else "; ".join(messages)
 
+  def _cpu_fast_line(self, temp, note=""):
+    live, held = _cpu_live_mhz()
+    where = "in a game" if _game_running() else "on the library"
+    parts = []
+    if temp is None:
+      parts.append(f"CPU temperature unreadable {where}")
+    else:
+      parts.append(f"CPU {temp:.0f}C {where}")
+    if note:
+      parts.append(note)
+    if live is not None:
+      parts.append(f"live clock {live} MHz")
+    if held is not None:
+      parts.append(f"clock cap held at {held} MHz")
+    parts.append(f"saved cap {self._saved_limit('cpu_tdp_watts')}W / {self._saved_limit('cpu_clock_mhz')} MHz")
+    return ". ".join(parts)
+
   def _arm_cpu_seal(self):
     """The Ally controller clears the CPU boost cap when a watt or clock change lands."""
     self._latch_cpu_cap(with_thermal=True, with_times=True)
@@ -1259,6 +1380,12 @@ class Plugin:
       err = _apply_cpu_clock(mhz)
       if err:
         _note_limit_error(err)
+        if err != getattr(self, "_clock_err", ""):
+          self._clock_err = err
+          _event("Error", f"CPU clock cap write failed. {err}")
+      elif getattr(self, "_clock_err", ""):
+        self._clock_err = ""
+        _event("Information", f"CPU clock cap written at {mhz} MHz.")
     if not with_watts:
       return
     watts = self._saved_limit("cpu_tdp_watts")
@@ -1267,7 +1394,14 @@ class Plugin:
     err = _apply_ryzenadj_tdp(watts, with_times=with_times)
     if err:
       _note_limit_error(err)
+      if err != getattr(self, "_watt_err", ""):
+        self._watt_err = err
+        _event("Error", f"CPU watt cap write failed. {err}")
       return
+    if getattr(self, "_watt_err", "") or not getattr(self, "_watt_ok_logged", False):
+      self._watt_err = ""
+      self._watt_ok_logged = True
+      _event("Information", f"CPU watt cap written at {watts}W.")
     if with_thermal:
       err = _apply_cpu_thermal_limit()
       if err:
@@ -1278,6 +1412,16 @@ class Plugin:
     gpu_applied = False
     refreshed = False
     hold_ticks = 0
+    prev_temp = None
+    last_temp_event = 0.0
+    last_heartbeat = 0.0
+    hot = False
+    saw_game = None
+    _event(
+      "Information",
+      f"Power watch started. Saved CPU {self._saved_limit('cpu_tdp_watts')}W, "
+      f"clock {self._saved_limit('cpu_clock_mhz')} MHz. Log: {EVENT_LOG}",
+    )
     while not self._limit_stop.is_set():
       try:
         hold_ticks += 1
@@ -1285,7 +1429,46 @@ class Plugin:
         # hammering the CPU controller, which is what froze Quick Access before.
         full = hold_ticks % 20 == 1
         self._latch_cpu_cap(with_thermal=full, with_times=full, with_watts=full)
-        if not _game_running():
+        playing = _game_running()
+        if saw_game is None:
+          saw_game = playing
+        elif playing != saw_game:
+          saw_game = playing
+          _event("Information", "Game opened." if playing else "Back on the library.")
+        if hold_ticks % 10 == 0:
+          now = time.time()
+          temp = _cpu_temp_c()
+          live, held = _cpu_live_mhz()
+          jump = 0.0 if prev_temp is None or temp is None else temp - prev_temp
+          if temp is not None:
+            prev_temp = temp
+          over = live is not None and held is not None and held > 0 and live > held + 150
+          temp_hot = temp is not None and (temp >= 95 or jump >= 8)
+          if temp_hot and now - last_temp_event >= 1:
+            notes = []
+            if jump >= 8:
+              notes.append(f"rose {jump:.0f}C since the last sample")
+            if over:
+              notes.append("live clock is above the cap")
+            level = "Error" if temp is not None and temp >= 100 else "Warning"
+            first = not hot
+            hot = True
+            last_temp_event = now
+            _event(level, self._cpu_fast_line(temp, ". ".join(notes)))
+            if first:
+              _event(level, _ryzenadj_limits_line())
+          elif over and now - last_temp_event >= 5:
+            last_temp_event = now
+            _event("Warning", self._cpu_fast_line(temp, "live clock is above the cap"))
+          elif hot and temp is not None and temp < 90 and not over and now - last_temp_event >= 1:
+            hot = False
+            last_temp_event = now
+            _event("Information", self._cpu_fast_line(temp, "cooled down"))
+          elif temp is not None and now - last_heartbeat >= 30 and now - last_temp_event >= 5:
+            last_heartbeat = now
+            _event("Information", self._cpu_fast_line(temp, "steady"))
+            _event("Information", _ryzenadj_limits_line())
+        if not playing:
           gpu_applied = False
         else:
           if not refreshed and getattr(Plugin, "settings", None):
@@ -1327,7 +1510,8 @@ class Plugin:
       "shortcuts": SHORTCUTS_LOG,
       "sync": SYNC_LOG,
       "python": PYTHONERROR_LOG,
-      "debug": DEBUG_LOG
+      "debug": DEBUG_LOG,
+      "events": EVENT_LOG
     }
     path = log_map.get(log_type, ENABLE_LOG)
     
@@ -1422,7 +1606,8 @@ class Plugin:
       "shortcuts": SHORTCUTS_LOG,
       "sync": SYNC_LOG,
       "python": PYTHONERROR_LOG,
-      "debug": DEBUG_LOG
+      "debug": DEBUG_LOG,
+      "events": EVENT_LOG
     }
     
     path = log_map.get(log_type, ENABLE_LOG)

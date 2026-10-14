@@ -655,6 +655,14 @@ export const QuickAccessContent = () => {
         <PanelSectionRow>
           <ButtonItem
             layout="below"
+            onClick={() => showModal(<LiveLogViewerModal logType="events" title="Power Event Log" />)}
+          >
+            View Power Event Log
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
             onClick={() => showModal(<LogViewerModal />)} 
           >
             View Activity Logs

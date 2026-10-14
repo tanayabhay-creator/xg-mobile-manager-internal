@@ -10,9 +10,10 @@ import { call } from "@decky/api";
 interface LiveLogViewerModalProps {
   closeModal?: () => void;
   logType: string;
+  title?: string;
 }
 
-export const LiveLogViewerModal: FC<LiveLogViewerModalProps> = ({ closeModal, logType }) => {
+export const LiveLogViewerModal: FC<LiveLogViewerModalProps> = ({ closeModal, logType, title }) => {
   const [logText, setLogText] = useState("Initializing...");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -37,7 +38,7 @@ export const LiveLogViewerModal: FC<LiveLogViewerModalProps> = ({ closeModal, lo
 
   return (
     <ModalRoot onCancel={closeModal}>
-      <DialogHeader>XG Mobile Maintenance</DialogHeader>
+      <DialogHeader>{title || "XG Mobile Maintenance"}</DialogHeader>
       <DialogBody>
         <Focusable>
           <div 

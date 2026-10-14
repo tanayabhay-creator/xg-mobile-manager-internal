@@ -461,7 +461,7 @@ class PluginState {
     }
 }
 
-const LiveLogViewerModal = ({ closeModal, logType }) => {
+const LiveLogViewerModal = ({ closeModal, logType, title }) => {
     const [logText, setLogText] = SP_REACT.useState("Initializing...");
     const scrollRef = SP_REACT.useRef(null);
     SP_REACT.useEffect(() => {
@@ -482,7 +482,7 @@ const LiveLogViewerModal = ({ closeModal, logType }) => {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
     }, [logText]);
-    return (SP_JSX.jsxs(DFL.ModalRoot, { onCancel: closeModal, children: [SP_JSX.jsx(DFL.DialogHeader, { children: "XG Mobile Maintenance" }), SP_JSX.jsx(DFL.DialogBody, { children: SP_JSX.jsx(DFL.Focusable, { children: SP_JSX.jsx("div", { ref: scrollRef, style: {
+    return (SP_JSX.jsxs(DFL.ModalRoot, { onCancel: closeModal, children: [SP_JSX.jsx(DFL.DialogHeader, { children: title || "XG Mobile Maintenance" }), SP_JSX.jsx(DFL.DialogBody, { children: SP_JSX.jsx(DFL.Focusable, { children: SP_JSX.jsx("div", { ref: scrollRef, style: {
                             backgroundColor: "#000000",
                             color: "#1df51d",
                             padding: "12px",
@@ -496,6 +496,7 @@ const LiveLogViewerModal = ({ closeModal, logType }) => {
 };
 
 const LOG_OPTIONS = [
+    { data: 'events', label: 'Power Event Log' },
     { data: 'enable', label: 'Enable Log' },
     { data: 'enabledesktop', label: 'Enable Desktop Link Log' },
     { data: 'eject', label: 'Eject Log' },
@@ -842,7 +843,7 @@ const QuickAccessContent = () => {
                                 disabled: gpuStatus.active || isLoading, checked: selectedDesktopMode === "1", onChange: toggleDesktopMode }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Set Desktop to Default", description: "Turn on to set Desktop Mode to Default when running the XG Mobile. You MUST run the Eject Desktop Link to revert to GameMode.", 
                                 // Disable if the hardware is active
                                 disabled: gpuStatus.active || isLoading || selectedDesktopMode === "0", checked: selectedDesktopDefault === "1", onChange: toggleDesktopDefault }) })] })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Advanced", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", description: "Create Desktop shortcuts for enabling and ejecting the XG Mobile. Run this after selecting Vender type and running Install NVIDIA Drivers if needed.", disabled: isLoading, onClick: () => handleAction("create_desktop_shortcuts", "Creating Shortcuts"), children: "Create Desktop Shortcuts" }) }), osType === "steamos" && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: gpuStatus.active || isLoading, onClick: handleInstall, children: "Install NVIDIA Drivers" }) })), osType === "steamos" && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: gpuStatus.active || isLoading, onClick: onResetClick, children: SP_JSX.jsx("span", { style: { color: "#ff5555" }, children: "Reset Driver Environment" }) }) })), deviceType === "laptop" && ( //{hasSupergfxctl && (
-                    SP_JSX.jsxs(DFL.PanelSection, { title: "Flow Laptop Controls", children: [SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => enableSuperGfxd(), children: "Restart Supergfxd" }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: isLoading, onClick: () => handleAction("hybrid_supergfxctl", "Switching to Hybrid"), children: "Send Supergfxctl Hybrid command - beta" })] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: isLoading, onClick: () => handleAction("integrated_supergfxctl", "Switching to Integrated"), children: "Send Supergfxctl Integrated command - beta" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => DFL.showModal(SP_JSX.jsx(LogViewerModal, {})), children: "View Activity Logs" }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "About", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", opacity: 0.6, fontSize: "0.8em" }, children: [SP_JSX.jsx("span", { children: "Version" }), SP_JSX.jsx("span", { children: pluginVersion })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { opacity: 0.6, fontSize: "0.8em" }, children: "Original plugin by Kenny Hood (Kentronix). This build adds internal screen, power limits, and frame pacing." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { opacity: 0.6, fontSize: "0.8em" }, children: "Changes by tanayabhay-creator. GPL-3." }) })] })] }));
+                    SP_JSX.jsxs(DFL.PanelSection, { title: "Flow Laptop Controls", children: [SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => enableSuperGfxd(), children: "Restart Supergfxd" }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: isLoading, onClick: () => handleAction("hybrid_supergfxctl", "Switching to Hybrid"), children: "Send Supergfxctl Hybrid command - beta" })] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: isLoading, onClick: () => handleAction("integrated_supergfxctl", "Switching to Integrated"), children: "Send Supergfxctl Integrated command - beta" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => DFL.showModal(SP_JSX.jsx(LiveLogViewerModal, { logType: "events", title: "Power Event Log" })), children: "View Power Event Log" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => DFL.showModal(SP_JSX.jsx(LogViewerModal, {})), children: "View Activity Logs" }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "About", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", opacity: 0.6, fontSize: "0.8em" }, children: [SP_JSX.jsx("span", { children: "Version" }), SP_JSX.jsx("span", { children: pluginVersion })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { opacity: 0.6, fontSize: "0.8em" }, children: "Original plugin by Kenny Hood (Kentronix). This build adds internal screen, power limits, and frame pacing." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { opacity: 0.6, fontSize: "0.8em" }, children: "Changes by tanayabhay-creator. GPL-3." }) })] })] }));
 };
 
 var index = definePlugin(() => {
