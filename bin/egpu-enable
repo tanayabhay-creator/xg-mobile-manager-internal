@@ -180,11 +180,13 @@ apply_display_config() {
       echo "__GL_YIELD=USLEEP"
     fi
     # Empty, not 0. Gamescope turns variable refresh on for any non-empty value.
-    # Do not cap the game here, and do not shrink the swapchain queue: the frame
-    # still has to be copied back to the Ally panel, and a 1-frame queue freezes.
-    # vk_xwayland_wait_ready stays false so the CPU does not stall on every frame.
+    # 60,60 locks the Ally panel at 60 Hz. The Quick Access slider cannot hold
+    # that while the XG Mobile is connected, and the game's exclusive fullscreen
+    # option is ignored by Gamescope and snaps back.
     echo "ADAPTIVE_SYNC="
-    echo "unset STEAM_DISPLAY_REFRESH_LIMITS"
+    echo "STEAM_DISPLAY_REFRESH_LIMITS=60,60"
+    echo "VKD3D_FRAME_RATE=60"
+    echo "DXVK_FRAME_RATE=60"
     echo "vk_xwayland_wait_ready=false"
   } > "$display_conf"
   chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
