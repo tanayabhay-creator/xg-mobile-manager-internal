@@ -51,8 +51,11 @@ def _clean_env():
   env.pop("LD_LIBRARY_PATH", None)
   return env
 
-def _run_cmd(args):
-  return subprocess.run(args, capture_output=True, text=True, env=_clean_env())
+def _run_cmd(args, timeout=3):
+  try:
+    return subprocess.run(args, capture_output=True, text=True, env=_clean_env(), timeout=timeout)
+  except subprocess.TimeoutExpired:
+    return subprocess.CompletedProcess(args, 1, "", "timed out")
 
 def _read_text(path):
   try:
@@ -258,7 +261,7 @@ def _armoury_tdp_info():
     }
   return None
 
-def _apply_ryzenadj_tdp(watts):
+def _apply_ryzenadj_tdp(watts, with_times=True):
   tool = _which("ryzenadj")
   if not tool:
     return "ryzenadj was not found"
@@ -268,11 +271,12 @@ def _apply_ryzenadj_tdp(watts):
     f"--stapm-limit={mw}",
     f"--fast-limit={mw}",
     f"--slow-limit={mw}",
-  ])
+  ], timeout=0.8)
   if result.returncode != 0:
     return (result.stderr or result.stdout or "ryzenadj failed").strip()
   # One second is the shortest window ryzenadj accepts. A failed time write must not undo the watt cap.
-  _run_cmd([tool, "--slow-time=1", "--stapm-time=1"])
+  if with_times:
+    _run_cmd([tool, "--slow-time=1", "--stapm-time=1"], timeout=0.8)
   return ""
 
 def _apply_cpu_thermal_limit():
@@ -280,7 +284,7 @@ def _apply_cpu_thermal_limit():
   tool = _which("ryzenadj")
   if not tool:
     return ""
-  result = _run_cmd([tool, f"--tctl-temp={CPU_TEMP_LIMIT}"])
+  result = _run_cmd([tool, f"--tctl-temp={CPU_TEMP_LIMIT}"], timeout=0.8)
   if result.returncode != 0:
     return (result.stderr or result.stdout or "Could not set the CPU temperature limit").strip()
   return ""
@@ -1239,81 +1243,73 @@ class Plugin:
     return "Success" if not messages else "; ".join(messages)
 
   def _arm_cpu_seal(self):
-    """The Ally controller clears the CPU boost cap when a watt or clock change lands.
+    """The Ally controller clears the CPU boost cap when a watt or clock change lands."""
+    self._latch_cpu_cap(with_thermal=True, with_times=True)
 
-    Put the cap back immediately, then keep checking for a couple of seconds.
+  def _latch_cpu_cap(self, with_thermal=False, with_times=False, with_watts=True):
+    """Write the saved CPU clock and watt caps again.
+
+    The clock cap is written on every pass. It does not go through the firmware
+    controller, so a cleared watt cap still cannot boost to the clocks that hit 106°C.
+    The watt cap is written on a timer, not after reading it: ryzenadj --info
+    returns too late, and the chip has already spiked.
     """
-    self._seal_until = time.time() + 6
-    self._hold_cpu_boost()
-
-  def _hold_cpu_boost(self):
-    """Put the watt cap back only when firmware has cleared it."""
+    mhz = self._saved_limit("cpu_clock_mhz")
+    if mhz > 0:
+      err = _apply_cpu_clock(mhz)
+      if err:
+        _note_limit_error(err)
+    if not with_watts:
+      return
     watts = self._saved_limit("cpu_tdp_watts")
-    limits = _ryzenadj_limits()
-    if watts <= 0 and limits and limits.get("stapm"):
-      stapm = int(round(limits["stapm"]))
-      if 8 <= stapm <= 54:
-        watts = stapm
-    if watts <= 0 or not limits:
+    if watts <= 0:
       return
-    present = [limits.get(name) for name in ("fast", "slow", "stapm")]
-    present = [value for value in present if value is not None]
-    if not present:
-      return
-    if not any(value <= 0 or value > watts + 2 for value in present):
-      return
-    err = _apply_ryzenadj_tdp(watts)
+    err = _apply_ryzenadj_tdp(watts, with_times=with_times)
     if err:
       _note_limit_error(err)
       return
-    err = _apply_cpu_thermal_limit()
-    if err:
-      _note_limit_error(err)
+    if with_thermal:
+      err = _apply_cpu_thermal_limit()
+      if err:
+        _note_limit_error(err)
 
   def _watch_limits(self):
-    """Stay quiet on the library. While a game is open, catch a cleared cap quickly."""
+    """Keep the CPU caps applied on the library and while a game is open."""
     gpu_applied = False
     refreshed = False
     hold_ticks = 0
     while not self._limit_stop.is_set():
-      if self._limit_stop.wait(0.1):
-        return
       try:
-        if time.time() < getattr(self, "_seal_until", 0):
-          self._hold_cpu_boost()
-          continue
         hold_ticks += 1
-        playing = _game_running()
-        if not playing:
+        # Clock cap every pass. Watt cap once a second so the library is not
+        # hammering the CPU controller, which is what froze Quick Access before.
+        full = hold_ticks % 20 == 1
+        self._latch_cpu_cap(with_thermal=full, with_times=full, with_watts=full)
+        if not _game_running():
           gpu_applied = False
-          # The surge also happens on the library. Read the cap and write it
-          # back only if the controller cleared it. Do not touch the eGPU here.
-          if hold_ticks % 2 == 0:
-            self._hold_cpu_boost()
-          continue
-        # The Ally can reach 106°C in under a second after the cap disappears.
-        if hold_ticks % 2 == 0:
-          self._hold_cpu_boost()
-        if not refreshed and getattr(Plugin, "settings", None):
-          Plugin.settings.setSetting("igpu_clock_mhz", 0)
-          revision = 0
-          try:
-            revision = int(float(Plugin.settings.getSetting("preset_revision", 0) or 0))
-          except Exception:
+        else:
+          if not refreshed and getattr(Plugin, "settings", None):
+            Plugin.settings.setSetting("igpu_clock_mhz", 0)
             revision = 0
-          if revision != 4:
-            name = str(Plugin.settings.getSetting("power_preset", "") or "")
-            if name:
-              self._set_power_profile_now(name)
-            Plugin.settings.setSetting("preset_revision", 4)
-          _restore_igpu_automatic()
-          refreshed = True
-        if not gpu_applied:
-          # Once per game. Repeating nvidia-smi on a timer is enough to trip the surge.
-          self.apply_saved_limits()
-          gpu_applied = True
+            try:
+              revision = int(float(Plugin.settings.getSetting("preset_revision", 0) or 0))
+            except Exception:
+              revision = 0
+            if revision != 4:
+              name = str(Plugin.settings.getSetting("power_preset", "") or "")
+              if name:
+                self._set_power_profile_now(name)
+              Plugin.settings.setSetting("preset_revision", 4)
+            _restore_igpu_automatic()
+            refreshed = True
+          if not gpu_applied:
+            # Once per game. Repeating nvidia-smi on a timer is enough to trip the surge.
+            self.apply_saved_limits()
+            gpu_applied = True
       except Exception as exc:
         _note_limit_error(str(exc))
+      if self._limit_stop.wait(0.05):
+        return
 
   async def get_live_logs(self, log_type="install"):
     """Called by the frontend every 500ms. log_type can be 'repair' or 'install' or 'uninstall'."""
@@ -1505,7 +1501,6 @@ class Plugin:
     asyncio.create_task(self.watch_eject_request())
     asyncio.create_task(self.watch_enable_request())
     self._limit_stop = threading.Event()
-    self._seal_until = 0
     threading.Thread(target=self._watch_limits, name="xgmobile-limits", daemon=True).start()
 
 #    try:
