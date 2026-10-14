@@ -326,9 +326,17 @@ def _apply_cpu_tdp(watts):
     return _apply_ryzenadj_tdp(watts)
   return "CPU power control was not found. Install ryzenadj."
 
+_game_seen = False
+_game_seen_at = 0.0
+
 def _game_running():
   """True only while a Proton or Wine game is open, not on the Game Mode library."""
-  needles = (b"pressure-vessel", b"wine64-preloader", b"wine-preloader")
+  global _game_seen, _game_seen_at
+  now = time.time()
+  if now - _game_seen_at < 0.5:
+    return _game_seen
+  needles = (b"pressure-vessel", b"wine64-preloader", b"wine-preloader", b".exe")
+  found = False
   for path in glob.glob("/proc/[0-9]*/cmdline"):
     try:
       with open(path, "rb") as handle:
@@ -336,8 +344,11 @@ def _game_running():
     except Exception:
       continue
     if any(needle in raw for needle in needles):
-      return True
-  return False
+      found = True
+      break
+  _game_seen = found
+  _game_seen_at = now
+  return found
 
 def _cpu_freq_files(name):
   return glob.glob(f"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/{name}")
@@ -1232,7 +1243,7 @@ class Plugin:
 
     Put the cap back immediately, then keep checking for a couple of seconds.
     """
-    self._seal_until = time.time() + 2.5
+    self._seal_until = time.time() + 6
     self._hold_cpu_boost()
 
   def _hold_cpu_boost(self):
@@ -1260,10 +1271,10 @@ class Plugin:
       _note_limit_error(err)
 
   def _watch_limits(self):
-    """Stay quiet on the library, except for the short seal after a power change."""
-    gpu_tick = 0
+    """Stay quiet on the library. While a game is open, catch a cleared cap quickly."""
+    gpu_applied = False
     refreshed = False
-    idle_ticks = 0
+    hold_ticks = 0
     while not self._limit_stop.is_set():
       if self._limit_stop.wait(0.1):
         return
@@ -1271,13 +1282,14 @@ class Plugin:
         if time.time() < getattr(self, "_seal_until", 0):
           self._hold_cpu_boost()
           continue
-        idle_ticks += 1
-        if idle_ticks < 20:
-          continue
-        idle_ticks = 0
         if not _game_running():
-          gpu_tick = 0
+          gpu_applied = False
+          hold_ticks = 0
           continue
+        hold_ticks += 1
+        # The Ally can reach 106°C in under a second after the cap disappears.
+        if hold_ticks % 2 == 0:
+          self._hold_cpu_boost()
         if not refreshed and getattr(Plugin, "settings", None):
           Plugin.settings.setSetting("igpu_clock_mhz", 0)
           revision = 0
@@ -1292,10 +1304,10 @@ class Plugin:
             Plugin.settings.setSetting("preset_revision", 4)
           _restore_igpu_automatic()
           refreshed = True
-        self._hold_cpu_boost()
-        gpu_tick += 1
-        if gpu_tick == 1 or gpu_tick % 15 == 0:
+        if not gpu_applied:
+          # Once per game. Repeating nvidia-smi on a timer is enough to trip the surge.
           self.apply_saved_limits()
+          gpu_applied = True
       except Exception as exc:
         _note_limit_error(str(exc))
 
