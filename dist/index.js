@@ -759,9 +759,15 @@ const QuickAccessContent = () => {
                                     { data: "Balanced", label: "Balanced" },
                                     { data: "Performance", label: "Performance" }
                                 ], onChange: async (option) => {
-                                    const newProfile = option.data;
+                                    const newProfile = option?.data ?? option;
+                                    if (!newProfile || newProfile === powerProfile)
+                                        return;
                                     setPowerProfile(newProfile);
-                                    await call("set_power_profile", { profile: newProfile });
+                                    const result = await call("set_power_profile", { profile: newProfile });
+                                    if (result && result !== "Success") {
+                                        toaster.toast({ title: "ASUS Profile", body: String(result) });
+                                        return;
+                                    }
                                     toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
                                 } })), SP_JSX.jsx("div", { style: { marginTop: "8px", fontSize: "12px", opacity: 0.7 }, children: "Efficient boost stays on. Watt and clock limits from this plugin are off." })] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "CPU boost", description: "On by default. Turn this off only if the 106\u00B0C surge returns. CPU-heavy games will run slower.", checked: cpuBoost, onChange: async (value) => {
                                 setCpuBoost(value);

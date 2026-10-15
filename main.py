@@ -773,18 +773,28 @@ class Plugin:
 
   async def set_power_profile(self, profile: str):
     if isinstance(profile, dict):
-      profile = profile.get("profile", "")
+      profile = profile.get("profile", profile.get("data", ""))
     clean_profile = str(profile).strip().lower()
     log(f"WMI PROFILE RECEIVED FROM UI: '{clean_profile}'")
-    val_to_write = "0"
-    if "balanced" in clean_profile:
-      val_to_write = "0"
-    elif "performance" in clean_profile:
+    if "performance" in clean_profile:
       val_to_write = "1"
     elif "quiet" in clean_profile:
       val_to_write = "2"
+    elif "balanced" in clean_profile:
+      val_to_write = "0"
+    else:
+      return "Unknown profile"
+    policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
     try:
-      policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
+      with open(policy_path, "r") as f:
+        current = f.read().strip()
+    except Exception:
+      current = ""
+    # Rewriting the same number still makes the Ally firmware reapply the profile.
+    if current == val_to_write:
+      log("Power profile already set. Firmware was not written.")
+      return "Success"
+    try:
       with open(policy_path, "w") as f:
         f.write(val_to_write)
     except Exception as e:

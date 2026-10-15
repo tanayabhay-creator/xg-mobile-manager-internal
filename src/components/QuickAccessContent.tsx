@@ -333,9 +333,14 @@ export const QuickAccessContent = () => {
                 { data: "Performance", label: "Performance" }
               ]}
               onChange={async (option: any) => {
-                const newProfile = option.data;
+                const newProfile = option?.data ?? option;
+                if (!newProfile || newProfile === powerProfile) return;
                 setPowerProfile(newProfile);
-                await call("set_power_profile", { profile: newProfile });
+                const result = await call("set_power_profile", { profile: newProfile }) as string;
+                if (result && result !== "Success") {
+                  toaster.toast({ title: "ASUS Profile", body: String(result) });
+                  return;
+                }
                 toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
               }}
             />
