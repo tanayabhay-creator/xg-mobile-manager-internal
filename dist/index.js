@@ -560,7 +560,6 @@ const QuickAccessContent = () => {
     const [selectedDesktopMode, setSelectedDesktopMode] = SP_REACT.useState("0");
     const [selectedDesktopDefault, setSelectedDesktopDefault] = SP_REACT.useState("0");
     const [displayTarget, setDisplayTarget] = SP_REACT.useState("external");
-    const [panel60, setPanel60] = SP_REACT.useState(false);
     const [osType, setOsType] = SP_REACT.useState("steamos");
     const [powerProfile, setPowerProfile] = SP_REACT.useState("Unknown");
     const [cpuBoost, setCpuBoost] = SP_REACT.useState(true);
@@ -577,8 +576,6 @@ const QuickAccessContent = () => {
                 setSelectedDesktopDefault(desktopdefault);
                 const display = await call("get_setting", "display_target", "external");
                 setDisplayTarget(display === "internal" ? "internal" : "external");
-                const panel = await call("get_setting", "panel_60hz", "0");
-                setPanel60(panel === "1");
                 const boost = await call("get_cpu_boost");
                 setCpuBoost(boost !== "0");
                 const ver = await call("get_version");
@@ -713,10 +710,6 @@ const QuickAccessContent = () => {
         setDisplayTarget(nextTarget);
         await call("set_setting", "display_target", nextTarget);
     };
-    const togglePanel60 = async (val) => {
-        setPanel60(val);
-        await call("set_setting", "panel_60hz", val ? "1" : "0");
-    };
     const toggleDesktopMode = async (val) => {
         const newDesktopMode = val ? "1" : "0";
         setSelectedDesktopMode(newDesktopMode);
@@ -787,7 +780,7 @@ const QuickAccessContent = () => {
                                     lineHeight: '1.4'
                                 }, children: [SP_JSX.jsx("b", { children: "\u26A0\uFE0F CRITICAL SLEEP WARNING" }), SP_JSX.jsx("br", {}), "Due to NVIDIA firmware limitations on this OS, putting the device to sleep right now will cause a fatal hardware crash requiring a hard reboot. ", SP_JSX.jsx("br", {}), SP_JSX.jsx("br", {}), SP_JSX.jsx("b", { children: "You must Eject the eGPU before sleeping." })] }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "NVIDIA Mode", description: "Turn off for AMD XG Mobile units", 
                                 // Disable if the hardware is active
-                                disabled: gpuStatus.active || isLoading, checked: selectedVendor === "nvidia", onChange: toggleVendor }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Play on Internal Screen", description: "Keep Game Mode on the Ally's built-in display. Games render on the XG Mobile and the picture is sent back to the internal screen. Turn this off to use a monitor plugged into the XG Mobile.", disabled: gpuStatus.active || isLoading, checked: displayTarget === "internal", onChange: toggleDisplayTarget }) }), displayTarget === "internal" && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "60 Hz panel lock", description: "Locks the Ally panel at 60 Hz with the game at 60 real frames. Leave this off to keep the panel at 120 Hz so frame generation can fill 120. Eject and Enable to apply.", disabled: gpuStatus.active || isLoading, checked: panel60, onChange: togglePanel60 }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "DesktopMode on Enable", description: "Turn on to reboot straight into Desktop Mode when running the Enable. Recommended for 4K and Ultrawide resolutions with NVIDIA GPUs.", 
+                                disabled: gpuStatus.active || isLoading, checked: selectedVendor === "nvidia", onChange: toggleVendor }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Play on Internal Screen", description: "Keep Game Mode on the Ally's built-in display. Games render on the XG Mobile and the picture is sent back to the internal screen. Turn this off to use a monitor plugged into the XG Mobile.", disabled: gpuStatus.active || isLoading, checked: displayTarget === "internal", onChange: toggleDisplayTarget }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "DesktopMode on Enable", description: "Turn on to reboot straight into Desktop Mode when running the Enable. Recommended for 4K and Ultrawide resolutions with NVIDIA GPUs.", 
                                 // Disable if the hardware is active
                                 disabled: gpuStatus.active || isLoading, checked: selectedDesktopMode === "1", onChange: toggleDesktopMode }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Set Desktop to Default", description: "Turn on to set Desktop Mode to Default when running the XG Mobile. You MUST run the Eject Desktop Link to revert to GameMode.", 
                                 // Disable if the hardware is active

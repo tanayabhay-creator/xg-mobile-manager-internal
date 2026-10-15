@@ -41,7 +41,6 @@ export const QuickAccessContent = () => {
   const [selectedDesktopMode, setSelectedDesktopMode] = useState("0");
   const [selectedDesktopDefault, setSelectedDesktopDefault] = useState("0");
   const [displayTarget, setDisplayTarget] = useState("external");
-  const [panel60, setPanel60] = useState(false);
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
   const [cpuBoost, setCpuBoost] = useState(true);
@@ -59,8 +58,6 @@ export const QuickAccessContent = () => {
         setSelectedDesktopDefault(desktopdefault);
         const display = await call("get_setting", "display_target", "external") as string;
         setDisplayTarget(display === "internal" ? "internal" : "external");
-        const panel = await call("get_setting", "panel_60hz", "0") as string;
-        setPanel60(panel === "1");
         const boost = await call("get_cpu_boost") as string;
         setCpuBoost(boost !== "0");
         const ver = await call("get_version") as string;
@@ -197,10 +194,6 @@ export const QuickAccessContent = () => {
     const nextTarget = val ? "internal" : "external";
     setDisplayTarget(nextTarget);
     await call("set_setting", "display_target", nextTarget) as string;
-  };
-  const togglePanel60 = async (val: boolean) => {
-    setPanel60(val);
-    await call("set_setting", "panel_60hz", val ? "1" : "0") as string;
   };
   const toggleDesktopMode = async (val: boolean) => {
     const newDesktopMode = val ? "1" : "0";
@@ -436,17 +429,6 @@ export const QuickAccessContent = () => {
                 onChange={toggleDisplayTarget}
               />
             </PanelSectionRow>
-            {displayTarget === "internal" && (
-              <PanelSectionRow>
-                <ToggleField
-                  label="60 Hz panel lock"
-                  description="Locks the Ally panel at 60 Hz with the game at 60 real frames. Leave this off to keep the panel at 120 Hz so frame generation can fill 120. Eject and Enable to apply."
-                  disabled={gpuStatus.active || isLoading}
-                  checked={panel60}
-                  onChange={togglePanel60}
-                />
-              </PanelSectionRow>
-            )}
             <PanelSectionRow>
               <ToggleField
                 label="DesktopMode on Enable"

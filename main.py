@@ -1015,7 +1015,7 @@ class Plugin:
     return value
   
   def _drop_old_power_settings(self):
-    """Forget watt and clock values saved by earlier builds. They are no longer applied."""
+    """Forget watt, clock, and panel-lock values saved by earlier builds. They are no longer applied."""
     keys = (
       "gpu_power_watts",
       "gpu_clock_mhz",
@@ -1026,6 +1026,7 @@ class Plugin:
       "preset_revision",
       "cpu_governor_saved",
       "cpu_epp_saved",
+      "panel_60hz",
     )
     removed = []
     for key in keys:
@@ -1034,7 +1035,7 @@ class Plugin:
         removed.append(key)
     if removed:
       Plugin.settings.commit()
-      log("Removed saved power limits: " + ", ".join(removed))
+      log("Removed saved settings: " + ", ".join(removed))
 
   def del_setting(self, key) -> None:
     """
