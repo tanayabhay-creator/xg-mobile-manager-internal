@@ -563,6 +563,7 @@ const QuickAccessContent = () => {
     const [panel60, setPanel60] = SP_REACT.useState(false);
     const [osType, setOsType] = SP_REACT.useState("steamos");
     const [powerProfile, setPowerProfile] = SP_REACT.useState("Unknown");
+    const [cpuBoost, setCpuBoost] = SP_REACT.useState(true);
     const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
     // 1. Initial Load: Fetch Vendor Setting once
     SP_REACT.useEffect(() => {
@@ -578,6 +579,8 @@ const QuickAccessContent = () => {
                 setDisplayTarget(display === "internal" ? "internal" : "external");
                 const panel = await call("get_setting", "panel_60hz", "0");
                 setPanel60(panel === "1");
+                const boost = await call("get_cpu_boost");
+                setCpuBoost(boost !== "0");
                 const ver = await call("get_version");
                 if (ver)
                     setPluginVersion(ver);
@@ -758,16 +761,23 @@ const QuickAccessContent = () => {
                             await call("reboot_system");
                         }, children: "Restart Now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { onClick: () => setNeedsReboot(false), children: "Restart Later" }) })] }));
     }
-    return (SP_JSX.jsxs(DFL.Focusable, { children: [(gpuStatus.active) && (SP_JSX.jsx(DFL.PanelSection, { title: "Performance Monitor", children: SP_JSX.jsxs("div", { style: statsStyle, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Temperature" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.temp })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Power Draw" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.power })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "VRAM Usage" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.vram })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "GPU Load" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.util })] })] }) })), (osType === "bazzite") && (selectedVendor === "nvidia") && (SP_JSX.jsx(DFL.PanelSection, { title: "System Warning", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { color: "#ff5555", fontSize: "14px", marginBottom: "10px" }, children: [SP_JSX.jsx("strong", { children: "Wrong OS Image Detected!" }), SP_JSX.jsx("br", {}), "You are running standard Bazzite. To use an NVIDIA eGPU, you MUST install the 'bazzite-deck-nvidia' image. The NVIDIA XG Mobile will not function correctly on this installation. Please install the correct version or select AMD."] }) }) })), SP_JSX.jsx(DFL.PanelSection, { title: "ASUS Hardware Controls", children: SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx("div", { style: { marginBottom: "6px", fontSize: "14px", opacity: 0.8 }, children: "Active Power Profile" }), powerProfile === "Error" || powerProfile === "Unknown" ? (SP_JSX.jsx("div", { style: { color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }, children: "Unable to read motherboard WMI policy." })) : (SP_JSX.jsx(DFL.Dropdown, { selectedOption: powerProfile, rgOptions: [
-                                { data: "Quiet", label: "Quiet" },
-                                { data: "Balanced", label: "Balanced" },
-                                { data: "Performance", label: "Performance" }
-                            ], onChange: async (option) => {
-                                const newProfile = option.data;
-                                setPowerProfile(newProfile);
-                                await call("set_power_profile", { profile: newProfile });
-                                toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
-                            } })), SP_JSX.jsx("div", { style: { marginTop: "8px", fontSize: "12px", opacity: 0.7 }, children: "Efficient boost stays on. Watt and clock limits from this plugin are off." })] }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Controls", children: isLoading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" }, children: [SP_JSX.jsx(DFL.Spinner, {}), SP_JSX.jsxs("span", { style: { marginLeft: "10px" }, children: [statusText, "..."] })] }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.connected || gpuStatus.active || isLoading, onClick: () => handleAction("enable_egpu", "Enabling"), children: gpuStatus.active ? "XG Mobile is Active" : "Enable XG Mobile" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.active || isLoading, onClick: () => handleAction("eject_egpu", "Ejecting"), children: gpuStatus.active ? "Eject XG Mobile" : "XG Mobile is not Active" }) }), showSleepWarning && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+    return (SP_JSX.jsxs(DFL.Focusable, { children: [(gpuStatus.active) && (SP_JSX.jsx(DFL.PanelSection, { title: "Performance Monitor", children: SP_JSX.jsxs("div", { style: statsStyle, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Temperature" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.temp })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Power Draw" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.power })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "VRAM Usage" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.vram })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "GPU Load" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.util })] })] }) })), (osType === "bazzite") && (selectedVendor === "nvidia") && (SP_JSX.jsx(DFL.PanelSection, { title: "System Warning", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { color: "#ff5555", fontSize: "14px", marginBottom: "10px" }, children: [SP_JSX.jsx("strong", { children: "Wrong OS Image Detected!" }), SP_JSX.jsx("br", {}), "You are running standard Bazzite. To use an NVIDIA eGPU, you MUST install the 'bazzite-deck-nvidia' image. The NVIDIA XG Mobile will not function correctly on this installation. Please install the correct version or select AMD."] }) }) })), SP_JSX.jsxs(DFL.PanelSection, { title: "ASUS Hardware Controls", children: [SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx("div", { style: { marginBottom: "6px", fontSize: "14px", opacity: 0.8 }, children: "Active Power Profile" }), powerProfile === "Error" || powerProfile === "Unknown" ? (SP_JSX.jsx("div", { style: { color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }, children: "Unable to read motherboard WMI policy." })) : (SP_JSX.jsx(DFL.Dropdown, { selectedOption: powerProfile, rgOptions: [
+                                    { data: "Quiet", label: "Quiet" },
+                                    { data: "Balanced", label: "Balanced" },
+                                    { data: "Performance", label: "Performance" }
+                                ], onChange: async (option) => {
+                                    const newProfile = option.data;
+                                    setPowerProfile(newProfile);
+                                    await call("set_power_profile", { profile: newProfile });
+                                    toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
+                                } })), SP_JSX.jsx("div", { style: { marginTop: "8px", fontSize: "12px", opacity: 0.7 }, children: "Efficient boost stays on. Watt and clock limits from this plugin are off." })] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "CPU boost", description: "On by default. Turn this off only if the 106\u00B0C surge returns. CPU-heavy games will run slower.", checked: cpuBoost, onChange: async (value) => {
+                                setCpuBoost(value);
+                                const result = await call("set_cpu_boost", value);
+                                if (result && result !== "Success") {
+                                    setCpuBoost(!value);
+                                    toaster.toast({ title: "CPU boost", body: String(result) });
+                                }
+                            } }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Controls", children: isLoading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" }, children: [SP_JSX.jsx(DFL.Spinner, {}), SP_JSX.jsxs("span", { style: { marginLeft: "10px" }, children: [statusText, "..."] })] }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.connected || gpuStatus.active || isLoading, onClick: () => handleAction("enable_egpu", "Enabling"), children: gpuStatus.active ? "XG Mobile is Active" : "Enable XG Mobile" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.active || isLoading, onClick: () => handleAction("eject_egpu", "Ejecting"), children: gpuStatus.active ? "Eject XG Mobile" : "XG Mobile is not Active" }) }), showSleepWarning && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
                                     backgroundColor: 'rgba(255, 0, 0, 0.15)',
                                     border: '1px solid #ff4444',
                                     padding: '12px',

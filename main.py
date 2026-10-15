@@ -189,6 +189,32 @@ def _apply_cpu_epp(preference):
       break
   return errors[0] if errors else ""
 
+def _cpu_boost_paths():
+  global_path = "/sys/devices/system/cpu/cpufreq/boost"
+  if os.path.exists(global_path):
+    return [global_path]
+  return _cpu_policy_files("boost")
+
+def _cpu_boost_enabled():
+  paths = _cpu_boost_paths()
+  if not paths:
+    return None
+  return _read_text(paths[0]) != "0"
+
+def _apply_cpu_boost(enabled):
+  """Kernel boost switch. This does not write watt or firmware limits."""
+  paths = _cpu_boost_paths()
+  if not paths:
+    return "CPU boost control was not found"
+  value = "1" if enabled else "0"
+  for path in paths:
+    if _read_text(path) == value:
+      continue
+    err = _write_text(path, value)
+    if err:
+      return err
+  return ""
+
 def _restore_igpu_automatic():
   """Older builds locked the internal GPU. Put that chip back on its own control once."""
   amd = [card for card in _drm_cards() if card["vendor"] == "0x1002"]
@@ -767,6 +793,24 @@ class Plugin:
     self._hold_cpu_epp()
     return "Success"
 
+  async def get_cpu_boost(self):
+    state = _cpu_boost_enabled()
+    if state is None:
+      return "Unknown"
+    return "1" if state else "0"
+
+  async def set_cpu_boost(self, enabled):
+    if isinstance(enabled, dict):
+      enabled = enabled.get("enabled", enabled.get("value", True))
+    if isinstance(enabled, str):
+      enabled = enabled.strip().lower() not in ("0", "false", "off")
+    err = _apply_cpu_boost(bool(enabled))
+    if err:
+      return err
+    Plugin.settings.setSetting("cpu_boost", "1" if enabled else "0")
+    log("CPU boost on." if enabled else "CPU boost off.")
+    return "Success"
+
   def _efficient_boost_name(self):
     choices = _cpu_epp_choices()
     if not choices or "balance_power" in choices:
@@ -1017,6 +1061,10 @@ class Plugin:
     asyncio.create_task(self.watch_enable_request())
     _restore_igpu_automatic()
     self._hold_cpu_epp()
+    if Plugin.settings.getSetting("cpu_boost", "1") == "0":
+      err = _apply_cpu_boost(False)
+      if err:
+        log(f"CPU boost could not be restored. {err}")
 
 #    try:
 #      # Check if the eGPU survived the reboot and is still active

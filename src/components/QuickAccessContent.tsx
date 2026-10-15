@@ -44,6 +44,7 @@ export const QuickAccessContent = () => {
   const [panel60, setPanel60] = useState(false);
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
+  const [cpuBoost, setCpuBoost] = useState(true);
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
   // 1. Initial Load: Fetch Vendor Setting once
@@ -60,6 +61,8 @@ export const QuickAccessContent = () => {
         setDisplayTarget(display === "internal" ? "internal" : "external");
         const panel = await call("get_setting", "panel_60hz", "0") as string;
         setPanel60(panel === "1");
+        const boost = await call("get_cpu_boost") as string;
+        setCpuBoost(boost !== "0");
         const ver = await call("get_version") as string;
         if (ver) setPluginVersion(ver);
         const os = await call("get_os_status") as string;
@@ -347,6 +350,21 @@ export const QuickAccessContent = () => {
           <div style={{ marginTop: "8px", fontSize: "12px", opacity: 0.7 }}>
             Efficient boost stays on. Watt and clock limits from this plugin are off.
           </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="CPU boost"
+            description="On by default. Turn this off only if the 106°C surge returns. CPU-heavy games will run slower."
+            checked={cpuBoost}
+            onChange={async (value: boolean) => {
+              setCpuBoost(value);
+              const result = await call("set_cpu_boost", value) as string;
+              if (result && result !== "Success") {
+                setCpuBoost(!value);
+                toaster.toast({ title: "CPU boost", body: String(result) });
+              }
+            }}
+          />
         </PanelSectionRow>
       </PanelSection>
 
