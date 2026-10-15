@@ -189,6 +189,82 @@ def _apply_cpu_epp(preference):
       break
   return errors[0] if errors else ""
 
+PROFILE_DEFAULTS = {
+  "quiet": {"gpu_watts": 70, "gpu_clock": 900, "cpu_watts": 12, "cpu_clock": 2800},
+  "balanced": {"gpu_watts": 91, "gpu_clock": 1100, "cpu_watts": 15, "cpu_clock": 3300},
+  "performance": {"gpu_watts": 115, "gpu_clock": 1400, "cpu_watts": 25, "cpu_clock": 4200},
+}
+
+def _profile_name(profile):
+  if isinstance(profile, dict):
+    profile = profile.get("profile", "")
+  name = str(profile or "").strip().lower()
+  if "performance" in name:
+    return "performance"
+  if "quiet" in name:
+    return "quiet"
+  if "balanced" in name:
+    return "balanced"
+  return ""
+
+def _clamp(value, low, high, fallback):
+  try:
+    number = int(float(value))
+  except (TypeError, ValueError):
+    number = fallback
+  return max(low, min(high, number))
+
+def _apply_gpu_watts(watts):
+  tool = _which("nvidia-smi")
+  if tool and os.path.exists("/dev/nvidiactl"):
+    result = _run_cmd([tool, "-pl", str(int(watts))])
+    if result.returncode != 0:
+      return (result.stderr or result.stdout or "Could not set the eGPU watt limit").strip()
+    return ""
+  for card in _drm_cards():
+    if card["internal"] or card["vendor"] != "0x1002":
+      continue
+    for cap in glob.glob(card["path"] + "/device/hwmon/hwmon*/power1_cap"):
+      err = _write_text(cap, str(int(watts) * 1000000))
+      return err or ""
+  return "eGPU watt control was not found. Enable the XG Mobile first."
+
+def _apply_gpu_clock(mhz):
+  tool = _which("nvidia-smi")
+  if not tool or not os.path.exists("/dev/nvidiactl"):
+    return "eGPU clock control was not found. Enable the XG Mobile first."
+  cap = max(300, int(mhz))
+  result = _run_cmd([tool, "-lgc", f"300,{cap}"])
+  if result.returncode != 0:
+    return (result.stderr or result.stdout or "Could not set the eGPU clock limit").strip()
+  return ""
+
+def _apply_cpu_watts(watts):
+  tool = _which("ryzenadj")
+  if not tool:
+    return "ryzenadj is not installed"
+  mw = int(watts) * 1000
+  result = _run_cmd([
+    tool,
+    f"--stapm-limit={mw}",
+    f"--fast-limit={mw}",
+    f"--slow-limit={mw}",
+  ], timeout=2)
+  if result.returncode != 0:
+    return (result.stderr or result.stdout or "Could not set the CPU watt limit").strip()
+  return ""
+
+def _apply_cpu_clock(mhz):
+  khz = str(int(mhz) * 1000)
+  paths = _cpu_policy_files("scaling_max_freq")
+  if not paths:
+    return "CPU clock control was not found"
+  for path in paths:
+    err = _write_text(path, khz)
+    if err:
+      return err
+  return ""
+
 def _restore_igpu_automatic():
   """Older builds locked the internal GPU. Put that chip back on its own control once."""
   amd = [card for card in _drm_cards() if card["vendor"] == "0x1002"]
@@ -765,6 +841,58 @@ class Plugin:
       error(f"Error setting power profile: {e}")
       return f"Error setting profile: {e}"
     self._hold_cpu_epp()
+    return "Success"
+
+  def _saved_profile_values(self, name):
+    defaults = PROFILE_DEFAULTS[name]
+    def read(key, low, high):
+      saved = Plugin.settings.getSetting(f"profile_{name}_{key}", defaults[key])
+      return _clamp(saved, low, high, defaults[key])
+    return {
+      "profile": "Performance" if name == "performance" else name.capitalize(),
+      "gpu_watts": read("gpu_watts", 5, 150),
+      "gpu_clock": read("gpu_clock", 300, 2100),
+      "cpu_watts": read("cpu_watts", 8, 30),
+      "cpu_clock": read("cpu_clock", 1400, 5000),
+    }
+
+  async def get_profile_values(self, profile):
+    name = _profile_name(profile)
+    if not name:
+      return self._saved_profile_values("balanced")
+    return self._saved_profile_values(name)
+
+  async def set_profile_values(self, profile, gpu_watts=0, gpu_clock=0, cpu_watts=0, cpu_clock=0):
+    """Write one profile's watts and clocks a single time. Nothing repeats this."""
+    if isinstance(profile, dict):
+      data = profile
+      profile = data.get("profile", "")
+      gpu_watts = data.get("gpu_watts", gpu_watts)
+      gpu_clock = data.get("gpu_clock", gpu_clock)
+      cpu_watts = data.get("cpu_watts", cpu_watts)
+      cpu_clock = data.get("cpu_clock", cpu_clock)
+    name = _profile_name(profile)
+    if not name:
+      return "Unknown profile"
+    values = {
+      "gpu_watts": _clamp(gpu_watts, 5, 150, PROFILE_DEFAULTS[name]["gpu_watts"]),
+      "gpu_clock": _clamp(gpu_clock, 300, 2100, PROFILE_DEFAULTS[name]["gpu_clock"]),
+      "cpu_watts": _clamp(cpu_watts, 8, 30, PROFILE_DEFAULTS[name]["cpu_watts"]),
+      "cpu_clock": _clamp(cpu_clock, 1400, 5000, PROFILE_DEFAULTS[name]["cpu_clock"]),
+    }
+    for key, value in values.items():
+      Plugin.settings.setSetting(f"profile_{name}_{key}", value)
+    log(f"Setting {name} once: {values['gpu_watts']}W, {values['gpu_clock']}MHz, CPU {values['cpu_watts']}W, {values['cpu_clock']}MHz")
+    problems = [
+      _apply_gpu_watts(values["gpu_watts"]),
+      _apply_gpu_clock(values["gpu_clock"]),
+      _apply_cpu_watts(values["cpu_watts"]),
+      _apply_cpu_clock(values["cpu_clock"]),
+    ]
+    self._hold_cpu_epp()
+    problems = [item for item in problems if item]
+    if problems:
+      return " ".join(problems)
     return "Success"
 
   def _efficient_boost_name(self):

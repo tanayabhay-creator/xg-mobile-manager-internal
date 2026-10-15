@@ -8,7 +8,8 @@ import {
   PanelSection, 
   PanelSectionRow,
   Focusable,
-  Dropdown
+  Dropdown,
+  SliderField
 } from "@decky/ui";
 import { call, toaster } from "@decky/api";
 import { LiveLogViewerModal } from "./LiveLogViewerModal";
@@ -44,6 +45,10 @@ export const QuickAccessContent = () => {
   const [panel60, setPanel60] = useState(false);
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
+  const [gpuWatts, setGpuWatts] = useState(91);
+  const [gpuClock, setGpuClock] = useState(1100);
+  const [cpuWatts, setCpuWatts] = useState(15);
+  const [cpuClock, setCpuClock] = useState(3300);
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
   // 1. Initial Load: Fetch Vendor Setting once
@@ -97,6 +102,40 @@ export const QuickAccessContent = () => {
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (powerProfile !== "Quiet" && powerProfile !== "Balanced" && powerProfile !== "Performance") return;
+    let cancelled = false;
+    const loadProfileValues = async () => {
+      try {
+        const values = await call("get_profile_values", { profile: powerProfile }) as any;
+        if (cancelled || !values) return;
+        setGpuWatts(Number(values.gpu_watts) || 0);
+        setGpuClock(Number(values.gpu_clock) || 0);
+        setCpuWatts(Number(values.cpu_watts) || 0);
+        setCpuClock(Number(values.cpu_clock) || 0);
+      } catch (e) {
+        console.error("Profile value error:", e);
+      }
+    };
+    loadProfileValues();
+    return () => { cancelled = true; };
+  }, [powerProfile]);
+
+  const setProfileValues = async () => {
+    const result = await call("set_profile_values", {
+      profile: powerProfile,
+      gpu_watts: Math.round(gpuWatts),
+      gpu_clock: Math.round(gpuClock),
+      cpu_watts: Math.round(cpuWatts),
+      cpu_clock: Math.round(cpuClock),
+    }) as string;
+    toaster.toast({
+      title: powerProfile,
+      body: result === "Success" ? "Values set once." : String(result),
+      duration: 5000,
+    });
+  };
 
   const handleAction = async (method: string, label: string) => {
     if (isLoading) return;
@@ -345,8 +384,19 @@ export const QuickAccessContent = () => {
             />
           )}
           <div style={{ marginTop: "8px", fontSize: "12px", opacity: 0.7 }}>
-            Efficient boost stays on. Watt and clock limits from this plugin are off.
+            These values belong to the selected profile. Set writes them once. Nothing keeps rewriting them.
           </div>
+          {powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? (
+            <>
+              <SliderField label="eGPU watts" value={gpuWatts} min={5} max={150} step={1} onChange={setGpuWatts} />
+              <SliderField label="eGPU max clock" value={gpuClock} min={300} max={2100} step={50} onChange={setGpuClock} />
+              <SliderField label="CPU watts" value={cpuWatts} min={8} max={30} step={1} onChange={setCpuWatts} />
+              <SliderField label="CPU max clock" value={cpuClock} min={1400} max={5000} step={100} onChange={setCpuClock} />
+              <ButtonItem layout="below" onClick={setProfileValues}>
+                Set {powerProfile} values
+              </ButtonItem>
+            </>
+          ) : null}
         </PanelSectionRow>
       </PanelSection>
 

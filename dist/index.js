@@ -563,6 +563,10 @@ const QuickAccessContent = () => {
     const [panel60, setPanel60] = SP_REACT.useState(false);
     const [osType, setOsType] = SP_REACT.useState("steamos");
     const [powerProfile, setPowerProfile] = SP_REACT.useState("Unknown");
+    const [gpuWatts, setGpuWatts] = SP_REACT.useState(91);
+    const [gpuClock, setGpuClock] = SP_REACT.useState(1100);
+    const [cpuWatts, setCpuWatts] = SP_REACT.useState(15);
+    const [cpuClock, setCpuClock] = SP_REACT.useState(3300);
     const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
     // 1. Initial Load: Fetch Vendor Setting once
     SP_REACT.useEffect(() => {
@@ -618,6 +622,41 @@ const QuickAccessContent = () => {
         const interval = setInterval(poll, 3000);
         return () => clearInterval(interval);
     }, []);
+    SP_REACT.useEffect(() => {
+        if (powerProfile !== "Quiet" && powerProfile !== "Balanced" && powerProfile !== "Performance")
+            return;
+        let cancelled = false;
+        const loadProfileValues = async () => {
+            try {
+                const values = await call("get_profile_values", { profile: powerProfile });
+                if (cancelled || !values)
+                    return;
+                setGpuWatts(Number(values.gpu_watts) || 0);
+                setGpuClock(Number(values.gpu_clock) || 0);
+                setCpuWatts(Number(values.cpu_watts) || 0);
+                setCpuClock(Number(values.cpu_clock) || 0);
+            }
+            catch (e) {
+                console.error("Profile value error:", e);
+            }
+        };
+        loadProfileValues();
+        return () => { cancelled = true; };
+    }, [powerProfile]);
+    const setProfileValues = async () => {
+        const result = await call("set_profile_values", {
+            profile: powerProfile,
+            gpu_watts: Math.round(gpuWatts),
+            gpu_clock: Math.round(gpuClock),
+            cpu_watts: Math.round(cpuWatts),
+            cpu_clock: Math.round(cpuClock),
+        });
+        toaster.toast({
+            title: powerProfile,
+            body: result === "Success" ? "Values set once." : String(result),
+            duration: 5000,
+        });
+    };
     const handleAction = async (method, label) => {
         if (isLoading)
             return;
@@ -767,7 +806,7 @@ const QuickAccessContent = () => {
                                 setPowerProfile(newProfile);
                                 await call("set_power_profile", { profile: newProfile });
                                 toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
-                            } })), SP_JSX.jsx("div", { style: { marginTop: "8px", fontSize: "12px", opacity: 0.7 }, children: "Efficient boost stays on. Watt and clock limits from this plugin are off." })] }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Controls", children: isLoading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" }, children: [SP_JSX.jsx(DFL.Spinner, {}), SP_JSX.jsxs("span", { style: { marginLeft: "10px" }, children: [statusText, "..."] })] }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.connected || gpuStatus.active || isLoading, onClick: () => handleAction("enable_egpu", "Enabling"), children: gpuStatus.active ? "XG Mobile is Active" : "Enable XG Mobile" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.active || isLoading, onClick: () => handleAction("eject_egpu", "Ejecting"), children: gpuStatus.active ? "Eject XG Mobile" : "XG Mobile is not Active" }) }), showSleepWarning && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                            } })), SP_JSX.jsx("div", { style: { marginTop: "8px", fontSize: "12px", opacity: 0.7 }, children: "These values belong to the selected profile. Set writes them once. Nothing keeps rewriting them." }), powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.SliderField, { label: "eGPU watts", value: gpuWatts, min: 5, max: 150, step: 1, onChange: setGpuWatts }), SP_JSX.jsx(DFL.SliderField, { label: "eGPU max clock", value: gpuClock, min: 300, max: 2100, step: 50, onChange: setGpuClock }), SP_JSX.jsx(DFL.SliderField, { label: "CPU watts", value: cpuWatts, min: 8, max: 30, step: 1, onChange: setCpuWatts }), SP_JSX.jsx(DFL.SliderField, { label: "CPU max clock", value: cpuClock, min: 1400, max: 5000, step: 100, onChange: setCpuClock }), SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: setProfileValues, children: ["Set ", powerProfile, " values"] })] })) : null] }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Controls", children: isLoading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "center" }, children: [SP_JSX.jsx(DFL.Spinner, {}), SP_JSX.jsxs("span", { style: { marginLeft: "10px" }, children: [statusText, "..."] })] }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.connected || gpuStatus.active || isLoading, onClick: () => handleAction("enable_egpu", "Enabling"), children: gpuStatus.active ? "XG Mobile is Active" : "Enable XG Mobile" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !gpuStatus.active || isLoading, onClick: () => handleAction("eject_egpu", "Ejecting"), children: gpuStatus.active ? "Eject XG Mobile" : "XG Mobile is not Active" }) }), showSleepWarning && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
                                     backgroundColor: 'rgba(255, 0, 0, 0.15)',
                                     border: '1px solid #ff4444',
                                     padding: '12px',
