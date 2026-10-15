@@ -184,6 +184,18 @@ if [ -n "$DATA_DIR" ]; then
 fi
 echo "Cleared internal-screen Game Mode override."
 
+# Deleting the file is not enough. The logged-in session already imported those
+# values, and it keeps them after the NVIDIA driver is unloaded. Game Mode then
+# waits on a GPU that is gone, so Bazzite opens Desktop instead.
+if id "$PRIMARY_USER" >/dev/null 2>&1; then
+  USER_UID=$(id -u "$PRIMARY_USER")
+  export DECK_BUS="XDG_RUNTIME_DIR=/run/user/$USER_UID"
+  SESSION_VARS="OUTPUT_CONNECTOR VULKAN_ADAPTER DXVK_FILTER_DEVICE_NAME VKD3D_FILTER_DEVICE_NAME PROTON_ENABLE_NVAPI __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME __GL_SYNC_TO_VBLANK __GL_YIELD ADAPTIVE_SYNC STEAM_DISPLAY_REFRESH_LIMITS VKD3D_FRAME_RATE DXVK_FRAME_RATE vk_xwayland_wait_ready GAMESCOPE_DISABLE_VK_KHR_PRESENT_WAIT"
+  systemctl unset-environment $SESSION_VARS || true
+  sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment $SESSION_VARS || true
+  echo "Cleared internal-screen variables from the logged-in session."
+fi
+
 systemctl start sddm #--no-block
 
 #if [ $SUPERGFX_TRIG == 1 ]; then
