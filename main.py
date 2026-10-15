@@ -970,6 +970,28 @@ class Plugin:
     Plugin.settings.setSetting(key, value)
     return value
   
+  def _drop_old_power_settings(self):
+    """Forget watt and clock values saved by earlier builds. They are no longer applied."""
+    keys = (
+      "gpu_power_watts",
+      "gpu_clock_mhz",
+      "cpu_tdp_watts",
+      "cpu_clock_mhz",
+      "igpu_clock_mhz",
+      "power_preset",
+      "preset_revision",
+      "cpu_governor_saved",
+      "cpu_epp_saved",
+    )
+    removed = []
+    for key in keys:
+      if key in Plugin.settings.settings:
+        del Plugin.settings.settings[key]
+        removed.append(key)
+    if removed:
+      Plugin.settings.commit()
+      log("Removed saved power limits: " + ", ".join(removed))
+
   def del_setting(self, key) -> None:
     """
     Deletes the specified setting in the json
@@ -989,6 +1011,7 @@ class Plugin:
 
     Plugin.settings = SettingsManager(name="settings", settings_directory=os.environ["DECKY_PLUGIN_SETTINGS_DIR"])
     await Plugin.read(self)
+    self._drop_old_power_settings()
     
     asyncio.create_task(self.watch_eject_request())
     asyncio.create_task(self.watch_enable_request())
