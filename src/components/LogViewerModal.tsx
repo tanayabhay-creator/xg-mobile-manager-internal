@@ -3,7 +3,6 @@ import { useEffect, useState, FC } from 'react';
 import { call } from "@decky/api";
 
 const LOG_OPTIONS: DropdownOption[] = [
-  { data: 'events', label: 'Power Event Log' },
   { data: 'enable', label: 'Enable Log' },
   { data: 'enabledesktop', label: 'Enable Desktop Link Log' },
   { data: 'eject', label: 'Eject Log' },

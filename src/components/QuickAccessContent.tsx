@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   ButtonItem, 
   Spinner, 
@@ -8,8 +8,7 @@ import {
   PanelSection, 
   PanelSectionRow,
   Focusable,
-  Dropdown,
-  SliderField
+  Dropdown
 } from "@decky/ui";
 import { call, toaster } from "@decky/api";
 import { LiveLogViewerModal } from "./LiveLogViewerModal";
@@ -45,12 +44,6 @@ export const QuickAccessContent = () => {
   const [panel60, setPanel60] = useState(false);
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
-  const [limits, setLimits] = useState<any>(null);
-  const [gpuPower, setGpuPower] = useState(100);
-  const [gpuClock, setGpuClock] = useState(2000);
-  const [cpuTdp, setCpuTdp] = useState(20);
-  const [cpuClock, setCpuClock] = useState(4000);
-  const limitTimers = useRef<Record<string, number>>({});
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
   // 1. Initial Load: Fetch Vendor Setting once
@@ -104,39 +97,6 @@ export const QuickAccessContent = () => {
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, []);
-
-  const loadLimits = async () => {
-    try {
-      const status = await call("get_limit_status") as any;
-      if (!status) return;
-      setLimits(status);
-      setGpuPower(Number(status.gpu_power) || 0);
-      setGpuClock(Number(status.gpu_clock) || 0);
-      setCpuTdp(Number(status.cpu_tdp) || 0);
-      setCpuClock(Number(status.cpu_clock) || 0);
-    } catch (e) {
-      console.error("Limit status error:", e);
-    }
-  };
-
-  useEffect(() => {
-    loadLimits();
-  }, [gpuStatus.active]);
-
-  const queueLimit = (method: string, value: number) => {
-    const existing = limitTimers.current[method];
-    if (existing) window.clearTimeout(existing);
-    limitTimers.current[method] = window.setTimeout(async () => {
-      try {
-        const result = await call(method, Math.round(value)) as string;
-        if (result && result !== "Success") {
-          toaster.toast({ title: "Power limit", body: String(result), duration: 5000 });
-        }
-      } catch (e) {
-        toaster.toast({ title: "Power limit", body: "Could not apply the limit." });
-      }
-    }, 400);
-  };
 
   const handleAction = async (method: string, label: string) => {
     if (isLoading) return;
@@ -362,145 +322,34 @@ export const QuickAccessContent = () => {
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
-            Quiet runs coolest. Balanced is the everyday cap. Performance allows more power. Changing a profile or the eGPU watt limit makes the Ally drop the CPU cap, so this plugin puts that cap back immediately.
+            Active Power Profile
           </div>
-          <Dropdown
-            selectedOption={powerProfile === "Quiet" || powerProfile === "Balanced" || powerProfile === "Performance" ? powerProfile : "Balanced"}
-            rgOptions={[
-              { data: "Quiet", label: "Quiet" },
-              { data: "Balanced", label: "Balanced" },
-              { data: "Performance", label: "Performance" }
-            ]}
-            onChange={async (option: any) => {
-              const newProfile = option.data;
-              setPowerProfile(newProfile);
-              const result = await call("set_power_profile", newProfile) as string;
-              toaster.toast({
-                title: newProfile,
-                body: String(result),
-                duration: 5000
-              });
-              await loadLimits();
-            }}
-          />
+          {powerProfile === "Error" || powerProfile === "Unknown" ? (
+            <div style={{ color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }}>
+              Unable to read motherboard WMI policy.
+            </div>
+          ) : (
+            <Dropdown
+              selectedOption={powerProfile}
+              rgOptions={[
+                { data: "Quiet", label: "Quiet" },
+                { data: "Balanced", label: "Balanced" },
+                { data: "Performance", label: "Performance" }
+              ]}
+              onChange={async (option: any) => {
+                const newProfile = option.data;
+                setPowerProfile(newProfile);
+                await call("set_power_profile", { profile: newProfile });
+                toaster.toast({ title: "ASUS Profile", body: `Set to ${newProfile}` });
+              }}
+            />
+          )}
+          <div style={{ marginTop: "8px", fontSize: "12px", opacity: 0.7 }}>
+            Efficient boost stays on. Watt and clock limits from this plugin are off.
+          </div>
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Power and Clocks">
-        {!limits && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "13px", opacity: 0.8 }}>Reading power limits...</div>
-          </PanelSectionRow>
-        )}
-        {limits && !limits.gpu_ready && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "13px", opacity: 0.8 }}>
-              Enable the XG Mobile to apply the eGPU limits below.
-            </div>
-          </PanelSectionRow>
-        )}
-        {limits && (
-          <PanelSectionRow>
-            <SliderField
-              label="eGPU power limit"
-              description="Lower the XG Mobile wattage to bring GPU temperature down."
-              value={gpuPower}
-              min={Number(limits.gpu_power_min) || 5}
-              max={Number(limits.gpu_power_max) || 150}
-              step={5}
-              showValue
-              valueSuffix=" W"
-              disabled={!gpuStatus.active || isLoading}
-              onChange={(value) => {
-                setGpuPower(value);
-                queueLimit("set_gpu_power_limit", value);
-              }}
-            />
-          </PanelSectionRow>
-        )}
-        {limits && limits.gpu_kind !== "amd" && (
-          <PanelSectionRow>
-            <SliderField
-              label="eGPU max clock"
-              description="Holds the XG Mobile near this clock so frame times stay even."
-              value={gpuClock}
-              min={Number(limits.gpu_clock_min) || 500}
-              max={Number(limits.gpu_clock_max) || 2500}
-              step={50}
-              showValue
-              valueSuffix=" MHz"
-              disabled={!gpuStatus.active || isLoading}
-              onChange={(value) => {
-                setGpuClock(value);
-                queueLimit("set_gpu_clock_limit", value);
-              }}
-            />
-          </PanelSectionRow>
-        )}
-        {limits?.cpu_tdp_supported && (
-          <PanelSectionRow>
-            <SliderField
-              label="CPU power limit"
-              description="Ends the boost at this wattage within a fraction of a second. 95°C is only a backstop if the firmware clears that cap."
-              value={cpuTdp}
-              min={Number(limits.cpu_tdp_min) || 8}
-              max={Number(limits.cpu_tdp_max) || 45}
-              step={1}
-              showValue
-              valueSuffix=" W"
-              disabled={isLoading}
-              onChange={(value) => {
-                setCpuTdp(value);
-                queueLimit("set_cpu_tdp", value);
-              }}
-            />
-          </PanelSectionRow>
-        )}
-        {limits && !limits.cpu_tdp_supported && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "13px", opacity: 0.8 }}>
-              CPU watt control needs ryzenadj, or the ASUS power attributes in the kernel.
-            </div>
-          </PanelSectionRow>
-        )}
-        {limits?.cpu_clock_supported && (
-          <PanelSectionRow>
-            <SliderField
-              label="CPU max clock"
-              description="Highest clock the cores may use. Efficient boost lets them sit below this when the frame does not need it."
-              value={cpuClock}
-              min={Number(limits.cpu_clock_min) || 1400}
-              max={Number(limits.cpu_clock_max) || 5000}
-              step={100}
-              showValue
-              valueSuffix=" MHz"
-              disabled={isLoading}
-              onChange={(value) => {
-                setCpuClock(value);
-                queueLimit("set_cpu_clock_limit", value);
-              }}
-            />
-          </PanelSectionRow>
-        )}
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={isLoading}
-            onClick={async () => {
-              const result = await call("reset_power_limits") as string;
-              toaster.toast({
-                title: "Power limits",
-                body: result === "Success" ? "Limits cleared" : String(result)
-              });
-              const prof = await call("get_power_profile") as string;
-              if (prof) setPowerProfile(prof);
-              await loadLimits();
-            }}
-          >
-            Reset power limits
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
 
       {/* SECTION 2: Controls */}
       <PanelSection title="Controls">
@@ -673,14 +522,6 @@ export const QuickAccessContent = () => {
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            onClick={() => showModal(<LiveLogViewerModal logType="events" title="Power Event Log" />)}
-          >
-            View Power Event Log
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
             onClick={() => showModal(<LogViewerModal />)} 
           >
             View Activity Logs
@@ -697,7 +538,7 @@ export const QuickAccessContent = () => {
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ opacity: 0.6, fontSize: "0.8em" }}>
-            Original plugin by Kenny Hood (Kentronix). This build adds internal screen, power limits, and frame pacing.
+            Original plugin by Kenny Hood (Kentronix). This build adds internal screen, efficient boost, and frame pacing.
           </div>
         </PanelSectionRow>
         <PanelSectionRow>

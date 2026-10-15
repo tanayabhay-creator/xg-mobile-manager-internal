@@ -115,85 +115,6 @@ def _parse_labeled_number(text, label):
     return 0
   return int(float(match.group(1)))
 
-def _nvidia_power_info():
-  smi = _which("nvidia-smi")
-  if not smi:
-    return None
-  result = _run_cmd([smi, "-q", "-d", "POWER"])
-  if result.returncode != 0:
-    return None
-  current = _parse_labeled_number(result.stdout, "Current Power Limit")
-  minimum = _parse_labeled_number(result.stdout, "Min Power Limit")
-  maximum = _parse_labeled_number(result.stdout, "Max Power Limit")
-  if maximum <= 0:
-    return None
-  return {"min": minimum or 5, "max": maximum, "current": current or maximum}
-
-def _nvidia_clock_info():
-  smi = _which("nvidia-smi")
-  if not smi:
-    return None
-  result = _run_cmd([smi, "--query-gpu=clocks.max.graphics", "--format=csv,noheader,nounits"])
-  if result.returncode != 0 or not result.stdout.strip():
-    return None
-  try:
-    maximum = int(float(result.stdout.strip().splitlines()[0].strip()))
-  except Exception:
-    return None
-  if maximum < 800:
-    return None
-  return {"min": 500, "max": maximum}
-
-def _apply_nvidia_power(watts):
-  smi = _which("nvidia-smi")
-  if not smi:
-    return "nvidia-smi was not found"
-  info = _nvidia_power_info()
-  if info:
-    watts = max(info["min"], min(info["max"], int(watts)))
-    if abs(info["current"] - int(watts)) <= 1:
-      return ""
-  result = _run_cmd([smi, "-pl", str(int(watts))])
-  if result.returncode != 0:
-    return (result.stderr or result.stdout or "Failed to set the GPU power limit").strip()
-  return ""
-
-def _nvidia_locked_clock():
-  smi = _which("nvidia-smi")
-  if not smi:
-    return None
-  result = _run_cmd([smi, "--query-gpu=clocks.applications.graphics", "--format=csv,noheader,nounits"])
-  if result.returncode != 0 or not result.stdout.strip():
-    return None
-  text = result.stdout.strip().splitlines()[0].strip()
-  if not text or text.upper() == "N/A":
-    return None
-  try:
-    return int(float(text))
-  except Exception:
-    return None
-
-def _apply_nvidia_clock(mhz):
-  smi = _which("nvidia-smi")
-  if not smi:
-    return "nvidia-smi was not found"
-  if int(mhz) <= 0:
-    result = _run_cmd([smi, "-rgc"])
-  else:
-    # Ceiling, with room to ease down. Pinning min=max makes the driver stall
-    # when the chip cannot hold that clock, which freezes the frame.
-    cap = int(mhz)
-    floor = max(300, int(cap * 0.85))
-    if floor > cap:
-      floor = cap
-    current = _nvidia_locked_clock()
-    if current is not None and abs(current - cap) <= 30:
-      return ""
-    result = _run_cmd([smi, "-lgc", f"{floor},{cap}"])
-  if result.returncode != 0:
-    return (result.stderr or result.stdout or "Failed to set the GPU clock limit").strip()
-  return ""
-
 def _drm_cards():
   cards = []
   for path in glob.glob("/sys/class/drm/card[0-9]*"):
@@ -211,311 +132,10 @@ def _drm_cards():
     })
   return cards
 
-def _amd_power_info():
-  nodes = []
-  for card in _drm_cards():
-    if card["vendor"] != "0x1002" or card["internal"]:
-      continue
-    nodes.extend(glob.glob(os.path.join(card["path"], "device/hwmon/hwmon*/power1_cap")))
-  if not nodes:
-    return None
-  folder = os.path.dirname(nodes[0])
-
-  def watts(filename, default=0):
-    raw = _read_text(os.path.join(folder, filename))
-    try:
-      return int(int(raw) / 1000000)
-    except Exception:
-      return default
-
-  maximum = watts("power1_cap_max")
-  minimum = watts("power1_cap_min", 5)
-  current = watts("power1_cap")
-  if maximum <= 0:
-    maximum = max(current, 150)
-  if current <= 0:
-    current = maximum
-  return {"min": max(5, minimum), "max": maximum, "current": current, "nodes": nodes}
-
-def _apply_amd_power(watts):
-  info = _amd_power_info()
-  if not info:
-    return "The AMD eGPU power limit was not found"
-  watts = max(info["min"], min(info["max"], int(watts)))
-  errors = []
-  for node in info["nodes"]:
-    err = _write_text(node, watts * 1000000)
-    if err:
-      errors.append(err)
-  return "; ".join(errors)
-
-def _gpu_limit_source():
-  nvidia = _nvidia_power_info()
-  if nvidia:
-    return {"kind": "nvidia", "power": nvidia, "clock": _nvidia_clock_info()}
-  amd = _amd_power_info()
-  if amd:
-    return {"kind": "amd", "power": amd, "clock": None}
-  return {"kind": "none", "power": None, "clock": None}
-
-ARMOURY_ROOT = "/sys/class/firmware-attributes/asus-armoury/attributes"
-PPT_NAMES = ["ppt_pl1_spl", "ppt_pl2_sppt", "ppt_fppt"]
-CPU_TEMP_LIMIT = 95
-
-def _armoury_tdp_info():
-  for name in PPT_NAMES:
-    base = os.path.join(ARMOURY_ROOT, name)
-    current_path = os.path.join(base, "current_value")
-    if not os.path.exists(current_path):
-      continue
-    try:
-      current = int(float(_read_text(current_path) or 0))
-      minimum = int(float(_read_text(os.path.join(base, "min_value")) or 5))
-      maximum = int(float(_read_text(os.path.join(base, "max_value")) or 45))
-    except Exception:
-      continue
-    scale = 1000 if maximum > 500 else 1
-    return {
-      "min": max(5, int(minimum / scale)),
-      "max": max(8, int(maximum / scale)),
-      "current": max(1, int((current or maximum) / scale)),
-      "scale": scale,
-    }
-  return None
-
-def _apply_ryzenadj_tdp(watts, with_times=True):
-  tool = _which("ryzenadj")
-  if not tool:
-    return "ryzenadj was not found"
-  mw = max(5000, int(watts) * 1000)
-  result = _run_cmd([
-    tool,
-    f"--stapm-limit={mw}",
-    f"--fast-limit={mw}",
-    f"--slow-limit={mw}",
-  ], timeout=0.8)
-  if result.returncode != 0:
-    return (result.stderr or result.stdout or "ryzenadj failed").strip()
-  # One second is the shortest window ryzenadj accepts. A failed time write must not undo the watt cap.
-  if with_times:
-    _run_cmd([tool, "--slow-time=1", "--stapm-time=1"], timeout=0.8)
-  return ""
-
-def _apply_cpu_thermal_limit():
-  """Backstop only. The watt limit is what ends the boost."""
-  tool = _which("ryzenadj")
-  if not tool:
-    return ""
-  result = _run_cmd([tool, f"--tctl-temp={CPU_TEMP_LIMIT}"], timeout=0.8)
-  if result.returncode != 0:
-    return (result.stderr or result.stdout or "Could not set the CPU temperature limit").strip()
-  return ""
-
-def _ryzenadj_watts(value):
-  value = float(value)
-  if value > 500:
-    value = value / 1000.0
-  return value
-
-def _ryzenadj_table(text):
-  found = {}
-  for key, label in (
-    ("stapm", "STAPM LIMIT"),
-    ("stapm_value", "STAPM VALUE"),
-    ("fast", "PPT LIMIT FAST"),
-    ("fast_value", "PPT VALUE FAST"),
-    ("slow", "PPT LIMIT SLOW"),
-    ("slow_value", "PPT VALUE SLOW"),
-    ("tctl", "THM LIMIT CORE"),
-    ("tctl_value", "THM VALUE CORE"),
-  ):
-    match = re.search(rf"{re.escape(label)}\s*\|\s*([0-9.]+)", text or "")
-    if not match:
-      match = re.search(rf"{re.escape(label)}\s*[:=]\s*([0-9.]+)", text or "")
-    if match:
-      found[key] = _ryzenadj_watts(match.group(1))
-  return found
-
-def _ryzenadj_limits():
-  """Live stapm/fast/slow caps in watts. None when ryzenadj cannot be read."""
-  tool = _which("ryzenadj")
-  if not tool:
-    return None
-  result = _run_cmd([tool, "--info"])
-  found = _ryzenadj_table(result.stdout or "")
-  kept = {key: found[key] for key in ("stapm", "fast", "slow") if key in found}
-  return kept or None
-
-def _ryzenadj_limits_line():
-  tool = _which("ryzenadj")
-  if not tool:
-    return "Ryzenadj is not installed."
-  result = _run_cmd([tool, "--info"], timeout=0.8)
-  found = _ryzenadj_table(result.stdout or "")
-  if not found:
-    detail = (result.stderr or result.stdout or "no output").strip().replace("\n", " ")
-    return f"Ryzenadj limits could not be read. {detail[:180]}"
-  labels = (
-    ("stapm", "STAPM limit"),
-    ("stapm_value", "STAPM value"),
-    ("fast", "fast limit"),
-    ("fast_value", "fast value"),
-    ("slow", "slow limit"),
-    ("slow_value", "slow value"),
-    ("tctl", "temp limit"),
-    ("tctl_value", "temp"),
-  )
-  parts = [f"{label} {found[key]:.1f}" for key, label in labels if key in found]
-  return "Ryzenadj " + ", ".join(parts)
-
-def _ryzenadj_current():
-  limits = _ryzenadj_limits()
-  if not limits or "stapm" not in limits:
-    return 0
-  return int(limits["stapm"])
-
-def _cpu_tdp_bounds():
-  info = _armoury_tdp_info()
-  if info:
-    return info["min"], info["max"], info["current"], True
-  if _which("ryzenadj"):
-    return 8, 45, _ryzenadj_current() or 25, True
-  return 8, 45, 15, False
-
-def _apply_cpu_tdp(watts):
-  # ryzenadj talks to the CPU directly. Writing the ASUS firmware attributes
-  # makes the controller drop the boost cap, which freezes the Ally even in the library.
-  if _which("ryzenadj"):
-    return _apply_ryzenadj_tdp(watts)
-  return "CPU power control was not found. Install ryzenadj."
-
-_game_seen = False
-_game_seen_at = 0.0
-
-def _game_running():
-  """True only while a Proton or Wine game is open, not on the Game Mode library."""
-  global _game_seen, _game_seen_at
-  now = time.time()
-  if now - _game_seen_at < 0.5:
-    return _game_seen
-  needles = (b"pressure-vessel", b"wine64-preloader", b"wine-preloader", b".exe")
-  found = False
-  for path in glob.glob("/proc/[0-9]*/cmdline"):
-    try:
-      with open(path, "rb") as handle:
-        raw = handle.read()
-    except Exception:
-      continue
-    if any(needle in raw for needle in needles):
-      found = True
-      break
-  _game_seen = found
-  _game_seen_at = now
-  return found
 
 def _cpu_freq_files(name):
   return glob.glob(f"/sys/devices/system/cpu/cpu[0-9]*/cpufreq/{name}")
 
-_cached_temp_paths = None
-_energy_path = ""
-_freq_cur_files = None
-_freq_max_files = None
-
-def _temp_paths():
-  """CPU and iGPU temperature files. The eGPU is NVIDIA and is not in this list."""
-  global _cached_temp_paths
-  if _cached_temp_paths is not None:
-    return _cached_temp_paths
-  paths = []
-  for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
-    if _read_text(name_path) not in ("k10temp", "amdgpu"):
-      continue
-    paths.extend(glob.glob(os.path.join(os.path.dirname(name_path), "temp*_input")))
-  _cached_temp_paths = paths
-  return paths
-
-def _cpu_temp_c():
-  """Highest live CPU or iGPU temperature. None when no sensor can be read."""
-  hottest = None
-  for path in _temp_paths():
-    try:
-      value = int(_read_text(path)) / 1000.0
-    except Exception:
-      continue
-    if hottest is None or value > hottest:
-      hottest = value
-  return hottest
-
-def _package_energy_uj():
-  """Package energy counter in microjoules. None when the kernel does not expose one."""
-  global _energy_path
-  if not _energy_path:
-    for path in glob.glob("/sys/class/powercap/intel-rapl*/energy_uj") + glob.glob("/sys/class/powercap/intel-rapl*/*/energy_uj"):
-      if _read_text(os.path.join(os.path.dirname(path), "name")) in ("package-0", "package"):
-        _energy_path = path
-        break
-    if not _energy_path:
-      for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
-        if _read_text(name_path) != "amd_energy":
-          continue
-        candidate = os.path.join(os.path.dirname(name_path), "energy1_input")
-        if os.path.exists(candidate):
-          _energy_path = candidate
-          break
-    if not _energy_path:
-      _energy_path = "-"
-  if _energy_path == "-":
-    return None
-  try:
-    return int(_read_text(_energy_path))
-  except Exception:
-    return None
-
-def _cpu_live_mhz():
-  """Highest live core clock, and the cap currently held, in MHz."""
-  global _freq_cur_files, _freq_max_files
-  live = None
-  held = None
-  try:
-    if _freq_cur_files is None:
-      _freq_cur_files = _cpu_freq_files("scaling_cur_freq")
-      _freq_max_files = _cpu_freq_files("scaling_max_freq")
-    if _freq_cur_files:
-      live = max(int(_read_text(path) or 0) for path in _freq_cur_files) // 1000
-    if _freq_max_files:
-      held = int(_read_text(_freq_max_files[0]) or 0) // 1000
-  except Exception:
-    return None, None
-  return live, held
-
-def _cpu_clock_info():
-  max_files = _cpu_freq_files("cpuinfo_max_freq")
-  current_files = _cpu_freq_files("scaling_max_freq")
-  if not max_files or not current_files:
-    return None
-  try:
-    maximum = int(int(_read_text(max_files[0])) / 1000)
-    current = int(int(_read_text(current_files[0])) / 1000)
-  except Exception:
-    return None
-  if maximum < 1000:
-    return None
-  minimum = min(1400, maximum)
-  return {"min": minimum, "max": maximum, "current": min(max(current, minimum), maximum)}
-
-def _apply_cpu_clock(mhz):
-  info = _cpu_clock_info()
-  if not info:
-    return "CPU clock control was not found"
-  target = info["max"] if int(mhz) <= 0 else int(mhz)
-  target = max(info["min"], min(info["max"], target))
-  errors = []
-  for path in _cpu_freq_files("scaling_max_freq"):
-    err = _write_text(path, target * 1000)
-    if err:
-      errors.append(err)
-      break
-  return errors[0] if errors else ""
 
 def _cpu_policy_files(name):
   paths = glob.glob(f"/sys/devices/system/cpu/cpufreq/policy[0-9]*/{name}")
@@ -588,80 +208,6 @@ def _restore_igpu_automatic():
       _write_text(level, "auto")
 
 # Watt headroom stays above the clock cap so the GPU is not throttled mid-frame.
-POWER_PRESETS = {
-  "quiet": {"gpu_power_ratio": 0.80, "gpu_clock_ratio": 0.65, "cpu_tdp": 18, "cpu_clock": 3800, "gpu_power_fallback": 120},
-  "balanced": {"gpu_power_ratio": 0.92, "gpu_clock_ratio": 0.80, "cpu_tdp": 22, "cpu_clock": 4200, "gpu_power_fallback": 140},
-  "performance": {"gpu_power_ratio": 1.0, "gpu_clock_ratio": 0.90, "cpu_tdp": 25, "cpu_clock": 4600, "gpu_power_fallback": 150},
-}
-
-def _clamp_step(value, low, high, step):
-  value = int(round(float(value)))
-  low = int(low)
-  high = int(high)
-  value = max(low, min(high, value))
-  if step > 1:
-    value = int(round(value / float(step)) * step)
-    value = max(low, min(high, value))
-  return value
-
-def _preset_name(profile):
-  text = str(profile or "").strip().lower()
-  for name in ("performance", "balanced", "quiet"):
-    if name in text:
-      return name
-  return ""
-
-def _preset_targets(name, source=None):
-  spec = POWER_PRESETS.get(name)
-  if not spec:
-    return {}
-  if source is None:
-    source = _gpu_limit_source()
-  targets = {}
-  cpu_min, cpu_max, _, cpu_ok = _cpu_tdp_bounds()
-  if cpu_ok:
-    targets["cpu_tdp_watts"] = _clamp_step(spec["cpu_tdp"], cpu_min, cpu_max, 1)
-  clocks = _cpu_clock_info()
-  if clocks:
-    targets["cpu_clock_mhz"] = _clamp_step(spec["cpu_clock"], clocks["min"], clocks["max"], 100)
-  power = source.get("power") if source else None
-  if power:
-    targets["gpu_power_watts"] = _clamp_step(power["max"] * spec["gpu_power_ratio"], power["min"], power["max"], 5)
-  else:
-    targets["gpu_power_watts"] = spec["gpu_power_fallback"]
-  clock = source.get("clock") if source else None
-  if source and source.get("kind") == "nvidia" and clock:
-    targets["gpu_clock_mhz"] = _clamp_step(clock["max"] * spec["gpu_clock_ratio"], clock["min"], clock["max"], 50)
-  return targets
-
-def _apply_preset_value(key, value, source):
-  if key == "gpu_power_watts":
-    if not source or source.get("kind") == "none":
-      return ""
-    if source["kind"] == "nvidia":
-      return _apply_nvidia_power(value)
-    if source["kind"] == "amd":
-      return _apply_amd_power(value)
-    return ""
-  if key == "gpu_clock_mhz":
-    if not source or source.get("kind") != "nvidia":
-      return ""
-    return _apply_nvidia_clock(value)
-  if key == "cpu_tdp_watts":
-    return _apply_cpu_tdp(value)
-  if key == "cpu_clock_mhz":
-    return _apply_cpu_clock(value)
-  return ""
-
-_last_limit_error = ""
-
-def _note_limit_error(message):
-  global _last_limit_error
-  if message and message != _last_limit_error:
-    _last_limit_error = message
-    error(f"Power limit: {message}")
-  elif not message:
-    _last_limit_error = ""
 
 class Plugin:
   settings: SettingsManager
@@ -1181,20 +727,11 @@ class Plugin:
 
   async def get_power_profile(self):
     try:
-      if getattr(Plugin, "settings", None):
-        saved = _preset_name(Plugin.settings.getSetting("power_preset", ""))
-        if saved:
-          return saved.title()
-    except Exception:
-      pass
-    try:
       policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
       if not os.path.exists(policy_path):
         return "Unknown"
-        
       with open(policy_path, "r") as f:
         val = f.read().strip()
-        
       # WMI Mapping: 0 = Balanced, 1 = Performance/Turbo, 2 = Quiet
       if val == "0":
         return "Balanced"
@@ -1209,274 +746,26 @@ class Plugin:
       return "Error"
 
   async def set_power_profile(self, profile: str):
-    return self._set_power_profile_now(profile)
-
-  def _set_power_profile_now(self, profile: str):
     if isinstance(profile, dict):
       profile = profile.get("profile", "")
-    name = _preset_name(profile)
-    if not name:
-      return "Choose Quiet, Balanced, or Performance."
-    log(f"Applying power preset: {name}")
-
-    source = _gpu_limit_source()
-    targets = _preset_targets(name, source)
-    applied = {}
-    messages = []
-    for key, value in targets.items():
-      self._arm_cpu_seal()
-      err = _apply_preset_value(key, value, source)
-      if err:
-        messages.append(err)
-        self._arm_cpu_seal()
-        continue
-      Plugin.settings.setSetting(key, int(value))
-      applied[key] = int(value)
-      self._arm_cpu_seal()
-    Plugin.settings.setSetting("power_preset", name)
-
-    parts = []
-    if "gpu_power_watts" in applied:
-      parts.append(f"GPU {applied['gpu_power_watts']}W")
-    if "gpu_clock_mhz" in applied:
-      parts.append(f"GPU {applied['gpu_clock_mhz']} MHz")
-    if "cpu_tdp_watts" in applied:
-      parts.append(f"CPU {applied['cpu_tdp_watts']}W")
-    if "cpu_clock_mhz" in applied:
-      parts.append(f"CPU {applied['cpu_clock_mhz']} MHz")
-    if not parts:
-      return "Could not find CPU or GPU limits to set."
-    summary = f"{name.title()} set. " + ", ".join(parts) + "."
-    if source.get("kind") == "none":
-      summary += " The XG Mobile cap applies after you enable it."
-    if messages:
-      summary += " " + "; ".join(messages)
-    _event("Information", summary)
-    return summary
-
-  def _saved_limit(self, key):
+    clean_profile = str(profile).strip().lower()
+    log(f"WMI PROFILE RECEIVED FROM UI: '{clean_profile}'")
+    val_to_write = "0"
+    if "balanced" in clean_profile:
+      val_to_write = "0"
+    elif "performance" in clean_profile:
+      val_to_write = "1"
+    elif "quiet" in clean_profile:
+      val_to_write = "2"
     try:
-      if not getattr(Plugin, "settings", None):
-        return 0
-      return int(float(Plugin.settings.getSetting(key, 0) or 0))
-    except Exception:
-      return 0
-
-  async def get_limit_status(self):
-    source = _gpu_limit_source()
-    power = source["power"] or {"min": 10, "max": 150, "current": 100}
-    clock = source["clock"]
-    cpu_min, cpu_max, cpu_current, cpu_ok = _cpu_tdp_bounds()
-    clocks = _cpu_clock_info() or {"min": 1400, "max": 5000, "current": 5000}
-    saved_power = self._saved_limit("gpu_power_watts")
-    saved_clock = self._saved_limit("gpu_clock_mhz")
-    saved_tdp = self._saved_limit("cpu_tdp_watts")
-    saved_cpu_clock = self._saved_limit("cpu_clock_mhz")
-
-    def clamp(value, low, high):
-      return min(high, max(low, value))
-
-    clock_min = clock["min"] if clock else 500
-    clock_max = clock["max"] if clock else 2500
-    return {
-      "gpu_ready": source["kind"] != "none",
-      "gpu_kind": source["kind"],
-      "gpu_power_min": power["min"],
-      "gpu_power_max": power["max"],
-      "gpu_power": clamp(saved_power or power["current"], power["min"], power["max"]),
-      "gpu_clock_supported": source["kind"] != "amd",
-      "gpu_clock_min": clock_min,
-      "gpu_clock_max": clock_max,
-      "gpu_clock": clamp(saved_clock or clock_max, clock_min, clock_max),
-      "cpu_tdp_supported": cpu_ok,
-      "cpu_tdp_min": cpu_min,
-      "cpu_tdp_max": cpu_max,
-      "cpu_tdp": clamp(saved_tdp or cpu_current, cpu_min, cpu_max),
-      "cpu_clock_supported": _cpu_clock_info() is not None,
-      "cpu_clock_min": clocks["min"],
-      "cpu_clock_max": clocks["max"],
-      "cpu_clock": clamp(saved_cpu_clock or clocks["current"], clocks["min"], clocks["max"]),
-    }
-
-  def _fill_missing_preset_gpu(self):
-    try:
-      if not getattr(Plugin, "settings", None):
-        return
-      name = _preset_name(Plugin.settings.getSetting("power_preset", ""))
-    except Exception:
-      return
-    if not name:
-      return
-    need_power = self._saved_limit("gpu_power_watts") <= 0
-    need_clock = self._saved_limit("gpu_clock_mhz") <= 0
-    if not need_power and not need_clock:
-      return
-    source = _gpu_limit_source()
-    if source.get("kind") == "none":
-      return
-    targets = _preset_targets(name, source)
-    if need_power and targets.get("gpu_power_watts"):
-      Plugin.settings.setSetting("gpu_power_watts", int(targets["gpu_power_watts"]))
-    if need_clock and targets.get("gpu_clock_mhz"):
-      Plugin.settings.setSetting("gpu_clock_mhz", int(targets["gpu_clock_mhz"]))
-
-  def apply_saved_limits(self):
-    self._fill_missing_preset_gpu()
-    messages = []
-    gpu_power = self._saved_limit("gpu_power_watts")
-    gpu_clock = self._saved_limit("gpu_clock_mhz")
-    cpu_clock = self._saved_limit("cpu_clock_mhz")
-    source = _gpu_limit_source() if gpu_power > 0 or gpu_clock > 0 else {"kind": "none", "power": None, "clock": None}
-    if gpu_power > 0:
-      if source["kind"] == "nvidia":
-        err = _apply_nvidia_power(gpu_power)
-      elif source["kind"] == "amd":
-        err = _apply_amd_power(gpu_power)
-      else:
-        err = ""
-      if err:
-        messages.append(err)
-    if gpu_clock > 0 and source["kind"] == "nvidia":
-      err = _apply_nvidia_clock(gpu_clock)
-      if err:
-        messages.append(err)
-    if cpu_clock > 0:
-      err = _apply_cpu_clock(cpu_clock)
-      if err:
-        messages.append(err)
-    _note_limit_error("; ".join(messages))
-    return "Success" if not messages else "; ".join(messages)
-
-  async def set_gpu_power_limit(self, watts):
-    watts = _as_int(watts)
-    self._arm_cpu_seal()
-    source = _gpu_limit_source()
-    if source["kind"] == "nvidia":
-      err = _apply_nvidia_power(watts)
-    elif source["kind"] == "amd":
-      err = _apply_amd_power(watts)
-    else:
-      err = ""
-    self._arm_cpu_seal()
-    if err:
-      _event("Error", f"eGPU power limit {watts}W failed. {err}")
-      return err
-    Plugin.settings.setSetting("gpu_power_watts", watts)
-    _event("Information", f"eGPU power limit set to {watts}W.")
+      policy_path = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
+      with open(policy_path, "w") as f:
+        f.write(val_to_write)
+    except Exception as e:
+      error(f"Error setting power profile: {e}")
+      return f"Error setting profile: {e}"
+    self._hold_cpu_epp()
     return "Success"
-
-  async def set_gpu_clock_limit(self, mhz):
-    mhz = _as_int(mhz)
-    kind = _gpu_limit_source()["kind"]
-    if kind == "amd":
-      return "Clock limiting is available for the NVIDIA XG Mobile."
-    self._arm_cpu_seal()
-    if kind == "nvidia":
-      err = _apply_nvidia_clock(mhz)
-      if err:
-        self._arm_cpu_seal()
-        _event("Error", f"eGPU clock limit {mhz} MHz failed. {err}")
-        return err
-    self._arm_cpu_seal()
-    Plugin.settings.setSetting("gpu_clock_mhz", mhz)
-    _event("Information", f"eGPU clock limit set to {mhz} MHz.")
-    return "Success"
-
-  async def set_cpu_tdp(self, watts):
-    watts = _as_int(watts)
-    err = _apply_cpu_tdp(watts)
-    if err:
-      _event("Error", f"CPU power limit {watts}W failed. {err}")
-      return err
-    Plugin.settings.setSetting("cpu_tdp_watts", watts)
-    self._arm_cpu_seal()
-    _event("Information", f"CPU power limit set to {watts}W.")
-    return "Success"
-
-  async def set_cpu_clock_limit(self, mhz):
-    mhz = _as_int(mhz)
-    self._arm_cpu_seal()
-    err = _apply_cpu_clock(mhz)
-    self._arm_cpu_seal()
-    if err:
-      _event("Error", f"CPU clock limit {mhz} MHz failed. {err}")
-      return err
-    Plugin.settings.setSetting("cpu_clock_mhz", mhz)
-    _event("Information", f"CPU clock limit set to {mhz} MHz.")
-    return "Success"
-
-  async def reset_power_limits(self):
-    _event("Information", "Power limits reset.")
-    for key in ("gpu_power_watts", "gpu_clock_mhz", "cpu_tdp_watts", "cpu_clock_mhz", "igpu_clock_mhz", "power_preset"):
-      Plugin.settings.setSetting(key, 0 if key != "power_preset" else "")
-    messages = []
-    self._arm_cpu_seal()
-    source = _gpu_limit_source()
-    if source["kind"] == "nvidia" and source["power"]:
-      err = _apply_nvidia_power(source["power"]["max"])
-      if err:
-        messages.append(err)
-      err = _apply_nvidia_clock(0)
-      if err:
-        messages.append(err)
-    elif source["kind"] == "amd" and source["power"]:
-      err = _apply_amd_power(source["power"]["max"])
-      if err:
-        messages.append(err)
-    _, cpu_max, _, cpu_ok = _cpu_tdp_bounds()
-    if cpu_ok:
-      err = _apply_cpu_tdp(cpu_max)
-      if err:
-        messages.append(err)
-    if _cpu_clock_info():
-      err = _apply_cpu_clock(0)
-      if err:
-        messages.append(err)
-    err = self._restore_cpu_epp()
-    if err:
-      messages.append(err)
-    self._arm_cpu_seal()
-    return "Success" if not messages else "; ".join(messages)
-
-  def _package_watts(self):
-    """Watts since the previous sample, from the package energy counter."""
-    now = time.time()
-    uj = _package_energy_uj()
-    prev_uj = getattr(self, "_energy_uj", None)
-    prev_at = getattr(self, "_energy_at", None)
-    watts = None
-    if uj is not None:
-      if prev_uj is not None and prev_at is not None:
-        dt = now - prev_at
-        if dt >= 0.02:
-          watts = (uj - prev_uj) / dt / 1000000.0
-          if watts < 0 or watts > 200:
-            watts = None
-      self._energy_uj = uj
-      self._energy_at = now
-    return watts
-
-  def _cpu_fast_line(self, temp, note="", watts=None):
-    live, held = _cpu_live_mhz()
-    where = "in a game" if _game_running() else "on the library"
-    parts = []
-    if temp is None:
-      parts.append(f"CPU temperature unreadable {where}")
-    else:
-      parts.append(f"CPU {temp:.0f}C {where}")
-    if note:
-      parts.append(note)
-    if watts is not None:
-      parts.append(f"package {watts:.0f}W")
-    epp = _current_cpu_epp()
-    if epp:
-      parts.append(f"boost {epp}")
-    if live is not None:
-      parts.append(f"live clock {live} MHz")
-    if held is not None:
-      parts.append(f"clock cap held at {held} MHz")
-    parts.append(f"saved cap {self._saved_limit('cpu_tdp_watts')}W / {self._saved_limit('cpu_clock_mhz')} MHz")
-    return ". ".join(parts)
 
   def _efficient_boost_name(self):
     choices = _cpu_epp_choices()
@@ -1487,223 +776,30 @@ class Plugin:
     return ""
 
   def _hold_cpu_epp(self):
-    """Keep G-Helper's efficient boost applied while a CPU cap is saved."""
-    if self._saved_limit("cpu_tdp_watts") <= 0 and self._saved_limit("cpu_clock_mhz") <= 0:
-      return
+    """G-Helper's efficient boost. No watt, clock, or ryzenadj writes."""
     current = _current_cpu_epp()
     if not current:
       if not getattr(self, "_epp_missing_logged", False):
         self._epp_missing_logged = True
-        _event("Information", "Efficient boost is unavailable. The kernel has no energy preference.")
+        log("Efficient boost is unavailable. The kernel has no energy preference.")
       return
     target = self._efficient_boost_name()
     if not target:
       return
     if _cpu_scaling_driver().startswith("amd-pstate"):
       for path in _cpu_policy_files("scaling_governor"):
-        governor = _read_text(path)
-        if governor == "performance":
-          if not getattr(self, "_governor_original", ""):
-            self._governor_original = governor
-            if getattr(Plugin, "settings", None):
-              Plugin.settings.setSetting("cpu_governor_saved", governor)
+        if _read_text(path) == "performance":
           err = _write_text(path, "powersave")
           if err:
-            _event("Error", f"Efficient boost could not set the CPU governor. {err}")
+            log(f"Efficient boost could not set the CPU governor. {err}")
             return
-    if current != target and not getattr(self, "_epp_original", ""):
-      self._epp_original = current
-      if getattr(Plugin, "settings", None):
-        Plugin.settings.setSetting("cpu_epp_saved", current)
     err = _apply_cpu_epp(target)
     if err:
-      if err != getattr(self, "_epp_err", ""):
-        self._epp_err = err
-        _event("Error", f"Efficient boost failed. {err}")
+      log(f"Efficient boost failed. {err}")
       return
     if not getattr(self, "_epp_logged", False):
       self._epp_logged = True
-      previous = getattr(self, "_epp_original", "") or current
-      _event("Information", f"Efficient boost set to {target}. Previous preference was {previous}.")
-
-  def _restore_cpu_epp(self):
-    """Put the CPU boost preference back after a reset."""
-    previous = getattr(self, "_epp_original", "")
-    governor = getattr(self, "_governor_original", "")
-    if getattr(Plugin, "settings", None):
-      if not previous:
-        previous = str(Plugin.settings.getSetting("cpu_epp_saved", "") or "")
-      if not governor:
-        governor = str(Plugin.settings.getSetting("cpu_governor_saved", "") or "")
-      Plugin.settings.setSetting("cpu_epp_saved", "")
-      Plugin.settings.setSetting("cpu_governor_saved", "")
-    self._epp_original = ""
-    self._epp_logged = False
-    self._governor_original = ""
-    errors = []
-    if previous:
-      err = _apply_cpu_epp(previous)
-      if err:
-        errors.append(err)
-      else:
-        _event("Information", f"Efficient boost restored to {previous}.")
-    if governor:
-      for path in _cpu_policy_files("scaling_governor"):
-        err = _write_text(path, governor)
-        if err:
-          errors.append(err)
-          break
-    return errors[0] if errors else ""
-
-  def _arm_cpu_seal(self):
-    """The Ally controller clears the CPU boost cap when a watt or clock change lands."""
-    self._latch_cpu_cap(with_thermal=True, with_times=True)
-
-  def _latch_cpu_cap(self, with_thermal=False, with_times=False, with_watts=True):
-    """Write the saved CPU clock and watt caps again.
-
-    The clock cap is written on every pass. It does not go through the firmware
-    controller, so a cleared watt cap still cannot boost to the clocks that hit 106°C.
-    The watt cap is written on a timer, not after reading it: ryzenadj --info
-    returns too late, and the chip has already spiked.
-    """
-    self._hold_cpu_epp()
-    mhz = self._saved_limit("cpu_clock_mhz")
-    if mhz > 0:
-      err = _apply_cpu_clock(mhz)
-      if err:
-        _note_limit_error(err)
-        if err != getattr(self, "_clock_err", ""):
-          self._clock_err = err
-          _event("Error", f"CPU clock cap write failed. {err}")
-      elif getattr(self, "_clock_err", ""):
-        self._clock_err = ""
-        _event("Information", f"CPU clock cap written at {mhz} MHz.")
-    if not with_watts:
-      return
-    watts = self._saved_limit("cpu_tdp_watts")
-    if watts <= 0:
-      return
-    err = _apply_ryzenadj_tdp(watts, with_times=with_times)
-    if err:
-      _note_limit_error(err)
-      if err != getattr(self, "_watt_err", ""):
-        self._watt_err = err
-        _event("Error", f"CPU watt cap write failed. {err}")
-      return
-    if getattr(self, "_watt_err", "") or not getattr(self, "_watt_ok_logged", False):
-      self._watt_err = ""
-      self._watt_ok_logged = True
-      _event("Information", f"CPU watt cap written at {watts}W.")
-    if with_thermal:
-      err = _apply_cpu_thermal_limit()
-      if err:
-        _note_limit_error(err)
-
-  def _watch_limits(self):
-    """Keep the CPU caps applied on the library and while a game is open."""
-    gpu_applied = False
-    refreshed = False
-    hold_ticks = 0
-    prev_temp = None
-    last_spike_log = 0.0
-    last_heartbeat = 0.0
-    last_limits = 0.0
-    last_loop = 0.0
-    hot = False
-    saw_game = None
-    _event(
-      "Information",
-      f"Power watch started. Saved CPU {self._saved_limit('cpu_tdp_watts')}W, "
-      f"clock {self._saved_limit('cpu_clock_mhz')} MHz. "
-      f"Temperature sensors {len(_temp_paths())}. "
-      f"Package energy {'missing' if _package_energy_uj() is None else _energy_path}.",
-    )
-    while not self._limit_stop.is_set():
-      try:
-        hold_ticks += 1
-        now = time.time()
-        if last_loop and now - last_loop >= 0.5:
-          _event("Warning", f"Watch loop stalled for {now - last_loop:.2f}s.")
-        last_loop = now
-        # Sample before ryzenadj. The temperature file lags a 106C spike, and a
-        # stalled read would freeze the Ally before the old 30s line was written.
-        temp = _cpu_temp_c()
-        live, held = _cpu_live_mhz()
-        pkg = self._package_watts()
-        saved_w = self._saved_limit("cpu_tdp_watts")
-        power_limit = saved_w if saved_w > 0 else 30
-        jump = 0.0 if prev_temp is None or temp is None else temp - prev_temp
-        if temp is not None:
-          prev_temp = temp
-        over_clock = live is not None and held is not None and held > 0 and live > held + 150
-        over_power = pkg is not None and pkg > power_limit + 10
-        temp_hot = temp is not None and (temp >= 90 or jump >= 5)
-        if (over_clock or over_power or temp_hot) and now - last_spike_log >= 0.25:
-          notes = []
-          if over_power:
-            notes.append(f"package power above {power_limit:.0f}W")
-          if jump >= 5:
-            notes.append(f"rose {jump:.0f}C since the last sample")
-          if over_clock:
-            notes.append("live clock is above the cap")
-          severe = (temp is not None and temp >= 100) or (pkg is not None and pkg > power_limit + 25) or (live is not None and held is not None and held > 0 and live > held + 500)
-          level = "Error" if severe else "Warning"
-          first = not hot
-          hot = True
-          last_spike_log = now
-          _event(level, self._cpu_fast_line(temp, ". ".join(notes), pkg))
-          if first:
-            _event(level, _ryzenadj_limits_line())
-        elif hot and not over_clock and not over_power and (temp is None or temp < 85) and now - last_spike_log >= 0.25:
-          hot = False
-          last_spike_log = now
-          _event("Information", self._cpu_fast_line(temp, "cooled down", pkg))
-        elif now - last_heartbeat >= 2 and now - last_spike_log >= 1:
-          last_heartbeat = now
-          _event("Information", self._cpu_fast_line(temp, "sample", pkg))
-          if now - last_limits >= 10:
-            last_limits = now
-            _event("Information", _ryzenadj_limits_line())
-        # Clock cap every pass. Watt cap once a second so the library is not
-        # hammering the CPU controller, which is what froze Quick Access before.
-        full = hold_ticks % 20 == 1
-        self._latch_cpu_cap(with_thermal=full, with_times=full, with_watts=full)
-        playing = _game_running()
-        if saw_game is None:
-          saw_game = playing
-        elif playing != saw_game:
-          saw_game = playing
-          _event("Information", "Game opened." if playing else "Back on the library.")
-        if not playing:
-          gpu_applied = False
-        else:
-          if not refreshed and getattr(Plugin, "settings", None):
-            Plugin.settings.setSetting("igpu_clock_mhz", 0)
-            revision = 0
-            try:
-              revision = int(float(Plugin.settings.getSetting("preset_revision", 0) or 0))
-            except Exception:
-              revision = 0
-            if revision != 4:
-              name = str(Plugin.settings.getSetting("power_preset", "") or "")
-              if name:
-                self._set_power_profile_now(name)
-              Plugin.settings.setSetting("preset_revision", 4)
-            _restore_igpu_automatic()
-            refreshed = True
-          if not gpu_applied:
-            # Once per game. Repeating nvidia-smi on a timer is enough to trip the surge.
-            self.apply_saved_limits()
-            gpu_applied = True
-      except Exception as exc:
-        message = str(exc)
-        _note_limit_error(message)
-        if message != getattr(self, "_watch_err", ""):
-          self._watch_err = message
-          _event("Error", f"Power watch failed. {message}")
-      if self._limit_stop.wait(0.05):
-        return
+      log(f"Efficient boost set to {target}. Previous preference was {current}.")
 
   async def get_live_logs(self, log_type="install"):
     """Called by the frontend every 500ms. log_type can be 'repair' or 'install' or 'uninstall'."""
@@ -1896,8 +992,8 @@ class Plugin:
     
     asyncio.create_task(self.watch_eject_request())
     asyncio.create_task(self.watch_enable_request())
-    self._limit_stop = threading.Event()
-    threading.Thread(target=self._watch_limits, name="xgmobile-limits", daemon=True).start()
+    _restore_igpu_automatic()
+    self._hold_cpu_epp()
 
 #    try:
 #      # Check if the eGPU survived the reboot and is still active
@@ -1914,8 +1010,6 @@ class Plugin:
 
   # Function called first during the unload process, utilize this to handle your plugin being removed
   async def _unload(self):
-    if getattr(self, "_limit_stop", None):
-      self._limit_stop.set()
     decky.logger.info("Unloading Plugin.")
 
   # Function called when the plugin is uninstalled
