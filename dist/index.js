@@ -562,6 +562,7 @@ const QuickAccessContent = () => {
     const [displayTarget, setDisplayTarget] = SP_REACT.useState("external");
     const [osType, setOsType] = SP_REACT.useState("steamos");
     const [powerProfile, setPowerProfile] = SP_REACT.useState("Unknown");
+    const [profileChangeDisabled, setProfileChangeDisabled] = SP_REACT.useState(false);
     const [cpuBoost, setCpuBoost] = SP_REACT.useState(true);
     const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
     // 1. Initial Load: Fetch Vendor Setting once
@@ -576,6 +577,8 @@ const QuickAccessContent = () => {
                 setSelectedDesktopDefault(desktopdefault);
                 const display = await call("get_setting", "display_target", "external");
                 setDisplayTarget(display === "internal" ? "internal" : "external");
+                const profileLock = await call("get_setting", "profile_change_disabled", "0");
+                setProfileChangeDisabled(profileLock === "1");
                 const boost = await call("get_cpu_boost");
                 setCpuBoost(boost !== "0");
                 const ver = await call("get_version");
@@ -710,6 +713,10 @@ const QuickAccessContent = () => {
         setDisplayTarget(nextTarget);
         await call("set_setting", "display_target", nextTarget);
     };
+    const toggleProfileChangeDisabled = async (val) => {
+        setProfileChangeDisabled(val);
+        await call("set_setting", "profile_change_disabled", val ? "1" : "0");
+    };
     const toggleDesktopMode = async (val) => {
         const newDesktopMode = val ? "1" : "0";
         setSelectedDesktopMode(newDesktopMode);
@@ -754,13 +761,13 @@ const QuickAccessContent = () => {
                             await call("reboot_system");
                         }, children: "Restart Now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { onClick: () => setNeedsReboot(false), children: "Restart Later" }) })] }));
     }
-    return (SP_JSX.jsxs(DFL.Focusable, { children: [(gpuStatus.active) && (SP_JSX.jsx(DFL.PanelSection, { title: "Performance Monitor", children: SP_JSX.jsxs("div", { style: statsStyle, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Temperature" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.temp })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Power Draw" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.power })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "VRAM Usage" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.vram })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "GPU Load" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.util })] })] }) })), (osType === "bazzite") && (selectedVendor === "nvidia") && (SP_JSX.jsx(DFL.PanelSection, { title: "System Warning", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { color: "#ff5555", fontSize: "14px", marginBottom: "10px" }, children: [SP_JSX.jsx("strong", { children: "Wrong OS Image Detected!" }), SP_JSX.jsx("br", {}), "You are running standard Bazzite. To use an NVIDIA eGPU, you MUST install the 'bazzite-deck-nvidia' image. The NVIDIA XG Mobile will not function correctly on this installation. Please install the correct version or select AMD."] }) }) })), SP_JSX.jsxs(DFL.PanelSection, { title: "ASUS Hardware Controls", children: [SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx("div", { style: { marginBottom: "6px", fontSize: "14px", opacity: 0.8 }, children: "Active Power Profile" }), powerProfile === "Error" || powerProfile === "Unknown" ? (SP_JSX.jsx("div", { style: { color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }, children: "Unable to read motherboard WMI policy." })) : (SP_JSX.jsx(DFL.Dropdown, { selectedOption: powerProfile, rgOptions: [
+    return (SP_JSX.jsxs(DFL.Focusable, { children: [(gpuStatus.active) && (SP_JSX.jsx(DFL.PanelSection, { title: "Performance Monitor", children: SP_JSX.jsxs("div", { style: statsStyle, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Temperature" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.temp })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "Power Draw" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.power })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "VRAM Usage" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.vram })] }), SP_JSX.jsxs("div", { children: [SP_JSX.jsx("small", { children: "GPU Load" }), SP_JSX.jsx("div", { style: { fontSize: "1.2em", fontWeight: "bold" }, children: telemetry.util })] })] }) })), (osType === "bazzite") && (selectedVendor === "nvidia") && (SP_JSX.jsx(DFL.PanelSection, { title: "System Warning", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { color: "#ff5555", fontSize: "14px", marginBottom: "10px" }, children: [SP_JSX.jsx("strong", { children: "Wrong OS Image Detected!" }), SP_JSX.jsx("br", {}), "You are running standard Bazzite. To use an NVIDIA eGPU, you MUST install the 'bazzite-deck-nvidia' image. The NVIDIA XG Mobile will not function correctly on this installation. Please install the correct version or select AMD."] }) }) })), SP_JSX.jsxs(DFL.PanelSection, { title: "ASUS Hardware Controls", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Disable profile changes", description: "Turn this on before you activate the XG Mobile. While it is on, choosing a profile does not write the firmware.", disabled: gpuStatus.active || isLoading, checked: profileChangeDisabled, onChange: toggleProfileChangeDisabled }) }), SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx("div", { style: { marginBottom: "6px", fontSize: "14px", opacity: 0.8 }, children: "Active Power Profile" }), powerProfile === "Error" || powerProfile === "Unknown" ? (SP_JSX.jsx("div", { style: { color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }, children: "Unable to read motherboard WMI policy." })) : (SP_JSX.jsx(DFL.Dropdown, { disabled: profileChangeDisabled, selectedOption: powerProfile, rgOptions: [
                                     { data: "Quiet", label: "Quiet" },
                                     { data: "Balanced", label: "Balanced" },
                                     { data: "Performance", label: "Performance" }
                                 ], onChange: async (option) => {
                                     const newProfile = option?.data ?? option;
-                                    if (!newProfile || newProfile === powerProfile)
+                                    if (profileChangeDisabled || !newProfile || newProfile === powerProfile)
                                         return;
                                     setPowerProfile(newProfile);
                                     const result = await call("set_power_profile", { profile: newProfile });

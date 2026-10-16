@@ -776,6 +776,9 @@ class Plugin:
       profile = profile.get("profile", profile.get("data", ""))
     clean_profile = str(profile).strip().lower()
     log(f"WMI PROFILE RECEIVED FROM UI: '{clean_profile}'")
+    if Plugin.settings.getSetting("profile_change_disabled", "0") == "1":
+      log("Profile change blocked. Firmware was not written.")
+      return "Profile changes are disabled. Eject the XG Mobile before changing this."
     if "performance" in clean_profile:
       val_to_write = "1"
     elif "quiet" in clean_profile:

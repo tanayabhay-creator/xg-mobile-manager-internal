@@ -43,6 +43,7 @@ export const QuickAccessContent = () => {
   const [displayTarget, setDisplayTarget] = useState("external");
   const [osType, setOsType] = useState("steamos");
   const [powerProfile, setPowerProfile] = useState("Unknown");
+  const [profileChangeDisabled, setProfileChangeDisabled] = useState(false);
   const [cpuBoost, setCpuBoost] = useState(true);
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
@@ -58,6 +59,8 @@ export const QuickAccessContent = () => {
         setSelectedDesktopDefault(desktopdefault);
         const display = await call("get_setting", "display_target", "external") as string;
         setDisplayTarget(display === "internal" ? "internal" : "external");
+        const profileLock = await call("get_setting", "profile_change_disabled", "0") as string;
+        setProfileChangeDisabled(profileLock === "1");
         const boost = await call("get_cpu_boost") as string;
         setCpuBoost(boost !== "0");
         const ver = await call("get_version") as string;
@@ -195,6 +198,10 @@ export const QuickAccessContent = () => {
     setDisplayTarget(nextTarget);
     await call("set_setting", "display_target", nextTarget) as string;
   };
+  const toggleProfileChangeDisabled = async (val: boolean) => {
+    setProfileChangeDisabled(val);
+    await call("set_setting", "profile_change_disabled", val ? "1" : "0") as string;
+  };
   const toggleDesktopMode = async (val: boolean) => {
     const newDesktopMode = val ? "1" : "0";
     setSelectedDesktopMode(newDesktopMode);
@@ -317,6 +324,15 @@ export const QuickAccessContent = () => {
       {/* UNIVERSAL ASUS WMI CONTROLS */}
       <PanelSection title="ASUS Hardware Controls">
         <PanelSectionRow>
+          <ToggleField
+            label="Disable profile changes"
+            description="Turn this on before you activate the XG Mobile. While it is on, choosing a profile does not write the firmware."
+            disabled={gpuStatus.active || isLoading}
+            checked={profileChangeDisabled}
+            onChange={toggleProfileChangeDisabled}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
             Active Power Profile
           </div>
@@ -326,6 +342,7 @@ export const QuickAccessContent = () => {
             </div>
           ) : (
             <Dropdown
+              disabled={profileChangeDisabled}
               selectedOption={powerProfile}
               rgOptions={[
                 { data: "Quiet", label: "Quiet" },
@@ -334,7 +351,7 @@ export const QuickAccessContent = () => {
               ]}
               onChange={async (option: any) => {
                 const newProfile = option?.data ?? option;
-                if (!newProfile || newProfile === powerProfile) return;
+                if (profileChangeDisabled || !newProfile || newProfile === powerProfile) return;
                 setPowerProfile(newProfile);
                 const result = await call("set_power_profile", { profile: newProfile }) as string;
                 if (result && result !== "Success") {
