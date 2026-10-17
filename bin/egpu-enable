@@ -178,25 +178,21 @@ apply_display_config() {
       echo "__GL_SYNC_TO_VBLANK=0"
       # Sleep instead of spinning while that copy finishes. A spin shows up as CPU heat.
       echo "__GL_YIELD=USLEEP"
+      # Two frames in flight. More than that lets the panel copy an edge the 3080
+      # has not finished, which is the blocky flicker on the character outline.
+      echo "__GL_MaxFramesAllowed=2"
       # Gamescope's present-wait path drops NVIDIA frames when the Ally chip owns
       # the screen. Hide it so a finished frame is what gets copied.
       echo "GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1"
       echo "VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait"
-      # A game often asks for two images. One is then stuck on the Ally panel and
-      # the 3080 cannot start the next frame. Four images let it draw while the
-      # previous frame is still being copied. Gamescope ignores the count unless
-      # the ensure flag is also set.
-      echo "GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT=1"
-      echo "GAMESCOPE_WSI_MIN_IMAGE_COUNT=4"
-      echo "DXVK_CONFIG=dxgi.maxFrameLatency=3"
     fi
     # Empty, not 0. Gamescope turns variable refresh on for any non-empty value.
     # The panel stays at 120 Hz. The plugin does not cap the game's frame rate.
     echo "ADAPTIVE_SYNC="
     echo "STEAM_DISPLAY_REFRESH_LIMITS=120,120"
-    # Gamescope waits on the finished frame itself. Blocking again inside the
-    # driver serializes the copy and the next draw, which is the 99% stall.
-    echo "vk_xwayland_wait_ready=false"
+    # Do not copy until the frame is finished. false was the change that made the
+    # outline flicker. The versions before that waited, and the outline was clean.
+    echo "vk_xwayland_wait_ready=true"
   } > "$display_conf"
   chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
   chmod 644 "$display_conf"
@@ -212,15 +208,17 @@ clear_imported_frame_cap() {
     export DECK_BUS="XDG_RUNTIME_DIR=/run/user/$USER_UID"
     sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment VKD3D_FRAME_RATE DXVK_FRAME_RATE || true
     if [ "$DISPLAY_TARGET" = "internal" ]; then
-      systemctl set-environment STEAM_DISPLAY_REFRESH_LIMITS=120,120 vk_xwayland_wait_ready=false || true
-      sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment STEAM_DISPLAY_REFRESH_LIMITS=120,120 vk_xwayland_wait_ready=false || true
+      systemctl set-environment STEAM_DISPLAY_REFRESH_LIMITS=120,120 vk_xwayland_wait_ready=true || true
+      sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment STEAM_DISPLAY_REFRESH_LIMITS=120,120 vk_xwayland_wait_ready=true || true
       if [ "$VENDOR" = "nvidia" ]; then
-        systemctl set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT=1 GAMESCOPE_WSI_MIN_IMAGE_COUNT=4 DXVK_CONFIG=dxgi.maxFrameLatency=3 || true
-        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT=1 GAMESCOPE_WSI_MIN_IMAGE_COUNT=4 DXVK_CONFIG=dxgi.maxFrameLatency=3 || true
+        systemctl set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait __GL_MaxFramesAllowed=2 || true
+        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait __GL_MaxFramesAllowed=2 || true
+        systemctl unset-environment GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG || true
+        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG || true
       fi
     else
-      systemctl unset-environment STEAM_DISPLAY_REFRESH_LIMITS vk_xwayland_wait_ready GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT VKD3D_DISABLE_EXTENSIONS GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG || true
-      sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment STEAM_DISPLAY_REFRESH_LIMITS vk_xwayland_wait_ready GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT VKD3D_DISABLE_EXTENSIONS GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG || true
+      systemctl unset-environment STEAM_DISPLAY_REFRESH_LIMITS vk_xwayland_wait_ready GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT VKD3D_DISABLE_EXTENSIONS GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG __GL_MaxFramesAllowed || true
+      sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment STEAM_DISPLAY_REFRESH_LIMITS vk_xwayland_wait_ready GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT VKD3D_DISABLE_EXTENSIONS GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG __GL_MaxFramesAllowed || true
     fi
   fi
   echo "Cleared the plugin frame-rate cap from the session."
