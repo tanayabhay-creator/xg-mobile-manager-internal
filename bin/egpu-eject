@@ -154,6 +154,9 @@ echo "Current DRM cards before disconnect: $INITIAL_COUNT"
 
 ENABLE_PATH="/sys/devices/platform/asus-nb-wmi/egpu_enable"
 echo 0 > "$ENABLE_PATH" || true
+rm -f /run/xgmobile-docked
+systemctl stop xgmobile-inhibit.service 2>/dev/null || true
+echo "Shutdown and sleep are allowed again."
 echo 1 > /sys/bus/pci/rescan
 
 COUNT=0

@@ -428,7 +428,7 @@ export const QuickAccessContent = () => {
                 }}>
                   <b>⚠️ CRITICAL SLEEP WARNING</b><br/>
                   Due to NVIDIA firmware limitations on this OS, putting the device to sleep right now will cause a fatal hardware crash requiring a hard reboot. <br/><br/>
-                  <b>You must Eject the eGPU before sleeping.</b>
+                  <b>Shutdown, reboot, and sleep are blocked until you Eject the XG Mobile.</b> Holding the power button still forces the machine off.
                 </div>
               </PanelSectionRow>
             )}

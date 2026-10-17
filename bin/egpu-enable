@@ -520,5 +520,77 @@ if command -v supergfxctl >/dev/null 2>&1; then
   fi
 fi
 
+install_power_guard() {
+  mkdir -p /etc/systemd/system /etc/polkit-1/rules.d \
+    /etc/systemd/system/poweroff.target.d \
+    /etc/systemd/system/reboot.target.d \
+    /etc/systemd/system/halt.target.d \
+    /etc/systemd/system/suspend.target.d \
+    /etc/systemd/system/hibernate.target.d \
+    /etc/systemd/system/hybrid-sleep.target.d \
+    /etc/systemd/system/sleep.target.d
+  cat > /etc/systemd/system/xgmobile-shutdown-guard.service << 'EOF'
+[Unit]
+Description=Block shutdown and sleep while the XG Mobile is connected
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'if [ -f /run/xgmobile-docked ]; then echo "Eject the XG Mobile before shutting down, rebooting, or sleeping."; exit 1; fi'
+EOF
+  cat > /etc/systemd/system/xgmobile-inhibit.service << 'EOF'
+[Unit]
+Description=Hold a shutdown inhibit while the XG Mobile is connected
+After=systemd-logind.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/systemd-inhibit --what=shutdown:sleep:handle-power-key --who=XG Mobile Manager --why=Eject the XG Mobile before shutting down or sleeping. --mode=block sleep infinity
+Restart=on-failure
+EOF
+  for target in poweroff reboot halt suspend hibernate hybrid-sleep sleep; do
+    cat > "/etc/systemd/system/${target}.target.d/xgmobile-guard.conf" << 'EOF'
+[Unit]
+Requires=xgmobile-shutdown-guard.service
+After=xgmobile-shutdown-guard.service
+EOF
+  done
+  cat > /etc/polkit-1/rules.d/50-xgmobile-block-power.rules << 'EOF'
+polkit.addRule(function(action, subject) {
+    var blocked = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions",
+        "org.freedesktop.login1.power-off-ignore-inhibit",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.reboot-ignore-inhibit",
+        "org.freedesktop.login1.halt",
+        "org.freedesktop.login1.halt-multiple-sessions",
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions",
+        "org.freedesktop.login1.hibernate",
+        "org.freedesktop.login1.hibernate-multiple-sessions"
+    ];
+    if (blocked.indexOf(action.id) < 0)
+        return polkit.Result.NOT_HANDLED;
+    try {
+        polkit.spawn(["/usr/bin/test", "-f", "/run/xgmobile-docked"]);
+        return polkit.Result.NO;
+    } catch (e) {
+        return polkit.Result.NOT_HANDLED;
+    }
+});
+EOF
+  systemctl daemon-reload
+}
+
+arm_power_guard() {
+  install_power_guard
+  touch /run/xgmobile-docked
+  systemctl start xgmobile-inhibit.service || true
+  echo "Shutdown and sleep are blocked until the XG Mobile is ejected."
+}
+
 echo "--- Enable Finished at $(date): Time for God Mode ---"
+arm_power_guard
 sudo ln -sf "$LOG_DIR/xgmobile_manager_enable_${VENDOR}.log" $LOG_DIR/xgmobile_manager_enable_latest.log
