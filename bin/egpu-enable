@@ -429,6 +429,21 @@ fi
 #fi
   # STOP UI
 # We must stop sddm so we can unload the driver modules
+select_gamescope_session() {
+  local uid
+  if ! id "$PRIMARY_USER" >/dev/null 2>&1; then
+    echo "No logged-in user. Game Mode was not selected."
+    return
+  fi
+  uid=$(id -u "$PRIMARY_USER")
+  echo "Selecting Game Mode for the next SteamOS login."
+  if [ -S "/run/user/$uid/bus" ]; then
+    sudo -u "$PRIMARY_USER" XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus /usr/bin/steamos-session-select gamescope || true
+  else
+    sudo -u "$PRIMARY_USER" /usr/bin/steamos-session-select gamescope || true
+  fi
+}
+
 queue_gamescope_restart() {
   local uid unit
   if ! id "$PRIMARY_USER" >/dev/null 2>&1; then
@@ -527,6 +542,9 @@ clear_imported_frame_cap
 echo "Refreshing DRM session..."
 if [[ "$OS_TYPE" == *"bazzite"* ]]; then
   queue_gamescope_restart
+elif [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  select_gamescope_session
+  systemctl start sddm #--no-block
 else
   systemctl start sddm #--no-block
 fi

@@ -27,6 +27,21 @@ else
   systemctl stop sddm
 fi
 
+select_gamescope_session() {
+  local uid
+  if ! id "$PRIMARY_USER" >/dev/null 2>&1; then
+    echo "No logged-in user. Game Mode was not selected."
+    return
+  fi
+  uid=$(id -u "$PRIMARY_USER")
+  echo "Selecting Game Mode for the next SteamOS login."
+  if [ -S "/run/user/$uid/bus" ]; then
+    sudo -u "$PRIMARY_USER" XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus /usr/bin/steamos-session-select gamescope || true
+  else
+    sudo -u "$PRIMARY_USER" /usr/bin/steamos-session-select gamescope || true
+  fi
+}
+
 queue_gamescope_restart() {
   local uid unit
   if ! id "$PRIMARY_USER" >/dev/null 2>&1; then
@@ -44,6 +59,8 @@ queue_gamescope_restart() {
 }
 
 if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  # Remove this before the driver unload. A half-finished Eject must still boot.
+  rm -f /etc/modprobe.d/nvidia-egpu.conf
   echo "Sanitizing /etc/environment..."
   sed -i '/MESA_VK_DEVICE_SELECT/d' /etc/environment
   sed -i '/VK_ICD_FILENAMES/d' /etc/environment
@@ -156,8 +173,8 @@ elif [[ "$OS_TYPE" == *"bazzite"* ]]; then
   fi
 fi 
 
-# Killing every DRM card also kills the Ally session and signs Steam out.
-if [[ "$OS_TYPE" != *"bazzite"* ]]; then
+# Killing every DRM card also kills the handheld session and signs Steam out.
+if [[ "$OS_TYPE" != *"bazzite"* && "$OS_TYPE" != "steamos" && "$OS_TYPE" != *"cachyos"* ]]; then
   echo "Ensuring card is free..."
   fuser -kv /dev/dri/card* >/dev/null 2>&1 || true
 fi 
@@ -224,6 +241,9 @@ fi
 
 if [[ "$OS_TYPE" == *"bazzite"* ]]; then
   queue_gamescope_restart
+elif [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  select_gamescope_session
+  systemctl start sddm #--no-block
 else
   systemctl start sddm #--no-block
 fi
