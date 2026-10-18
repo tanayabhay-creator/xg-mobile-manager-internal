@@ -42,9 +42,11 @@ export const QuickAccessContent = () => {
   const [selectedDesktopDefault, setSelectedDesktopDefault] = useState("0");
   const [displayTarget, setDisplayTarget] = useState("external");
   const [osType, setOsType] = useState("steamos");
-  const [powerProfile, setPowerProfile] = useState("Unknown");
+  const [powerProfile, setPowerProfile] = useState("");
+  const [profileReadFailed, setProfileReadFailed] = useState(false);
   const [profileChangeDisabled, setProfileChangeDisabled] = useState(false);
-  const [cpuBoost, setCpuBoost] = useState(true);
+  const [cpuBoost, setCpuBoost] = useState(false);
+  const [settingsReady, setSettingsReady] = useState(false);
   const showSleepWarning = gpuStatus.active && selectedVendor === 'nvidia' && (osType.includes('bazzite') || osType === 'cachyos');
 
   // 1. Initial Load: Fetch Vendor Setting once
@@ -61,8 +63,10 @@ export const QuickAccessContent = () => {
         setDisplayTarget(display === "internal" ? "internal" : "external");
         const profileLock = await call("get_setting", "profile_change_disabled", "0") as string;
         setProfileChangeDisabled(profileLock === "1");
-        const boost = await call("get_cpu_boost") as string;
-        setCpuBoost(boost !== "0");
+        const savedBoost = await call("get_setting", "cpu_boost", "1") as string;
+        setCpuBoost(savedBoost !== "0");
+        if (savedBoost === "0") await call("hold_saved_cpu_boost");
+        setSettingsReady(true);
         const ver = await call("get_version") as string;
         if (ver) setPluginVersion(ver);
         const os = await call("get_os_status") as string;
@@ -90,7 +94,13 @@ export const QuickAccessContent = () => {
           if (stats) setTelemetry(stats);
         }
         const prof = await call("get_power_profile") as string;
-        setPowerProfile(prof);
+        if (prof === "Error" || prof === "Unknown") {
+          setProfileReadFailed(true);
+        } else if (prof) {
+          setProfileReadFailed(false);
+          setPowerProfile(prof);
+        }
+        await call("hold_saved_cpu_boost");
       } catch (e) {
         console.error("Poll Error:", e);
       }
@@ -323,6 +333,11 @@ export const QuickAccessContent = () => {
 
       {/* UNIVERSAL ASUS WMI CONTROLS */}
       <PanelSection title="ASUS Hardware Controls">
+        {!settingsReady ? (
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", opacity: 0.8 }}>Reading saved settings...</div>
+          </PanelSectionRow>
+        ) : (
         <PanelSectionRow>
           <ToggleField
             label="Disable profile changes"
@@ -332,17 +347,18 @@ export const QuickAccessContent = () => {
             onChange={toggleProfileChangeDisabled}
           />
         </PanelSectionRow>
+        )}
         <PanelSectionRow>
           <div style={{ marginBottom: "6px", fontSize: "14px", opacity: 0.8 }}>
             Active Power Profile
           </div>
-          {powerProfile === "Error" || powerProfile === "Unknown" ? (
+          {!settingsReady || !powerProfile ? (
             <div style={{ color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }}>
-              Unable to read motherboard WMI policy.
+              {profileReadFailed ? "Unable to read motherboard WMI policy." : "Reading the power profile..."}
             </div>
           ) : (
             <Dropdown
-              disabled={profileChangeDisabled}
+              disabled={profileChangeDisabled || profileReadFailed}
               selectedOption={powerProfile}
               rgOptions={[
                 { data: "Quiet", label: "Quiet" },
@@ -362,10 +378,16 @@ export const QuickAccessContent = () => {
               }}
             />
           )}
+          {profileReadFailed && powerProfile && (
+            <div style={{ color: "#ffab40", fontSize: "12px", fontStyle: "italic", padding: "4px 0" }}>
+              Unable to read motherboard WMI policy.
+            </div>
+          )}
           <div style={{ marginTop: "8px", fontSize: "12px", opacity: 0.7 }}>
             Efficient boost stays on. Watt and clock limits from this plugin are off.
           </div>
         </PanelSectionRow>
+        {settingsReady && (
         <PanelSectionRow>
           <ToggleField
             label="CPU boost"
@@ -381,6 +403,7 @@ export const QuickAccessContent = () => {
             }}
           />
         </PanelSectionRow>
+        )}
       </PanelSection>
 
 

@@ -824,6 +824,19 @@ class Plugin:
     log("CPU boost on." if enabled else "CPU boost off.")
     return "Success"
 
+  async def hold_saved_cpu_boost(self):
+    """Keep a saved off switch off. The firmware can turn the kernel bit back on."""
+    if Plugin.settings.getSetting("cpu_boost", "1") != "0":
+      return "1"
+    if _cpu_boost_enabled() is False:
+      return "0"
+    err = _apply_cpu_boost(False)
+    if err:
+      log(f"CPU boost could not be held off. {err}")
+      return err
+    log("CPU boost had turned back on. The saved off setting was applied again.")
+    return "0"
+
   def _efficient_boost_name(self):
     choices = _cpu_epp_choices()
     if not choices or "balance_power" in choices:

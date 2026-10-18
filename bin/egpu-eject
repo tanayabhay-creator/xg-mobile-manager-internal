@@ -18,10 +18,30 @@ if systemctl is-active --quiet supergfxd.service; then
   SUPERGFX_TRIG=1
 fi
 
-# Stop UI
-# We must kill the session before we pull the rug out from the hardware
-echo "Stopping SDDM..."
-systemctl stop sddm
+# SteamOS desktop is SDDM. Bazzite Game Mode is not: stopping SDDM there
+# opens the desktop login and the next boot comes up signed out.
+if [[ "$OS_TYPE" == *"bazzite"* ]]; then
+  echo "Leaving Bazzite Game Mode running until the dock is off."
+else
+  echo "Stopping SDDM..."
+  systemctl stop sddm
+fi
+
+queue_gamescope_restart() {
+  local uid unit
+  if ! id "$PRIMARY_USER" >/dev/null 2>&1; then
+    echo "No logged-in user. Game Mode was not restarted."
+    return
+  fi
+  uid=$(id -u "$PRIMARY_USER")
+  unit=$(sudo -u "$PRIMARY_USER" XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user list-units --type=service --all --no-legend 'gamescope-session-plus@*' 2>/dev/null | awk 'NR==1 { print $1 }')
+  if [ -z "$unit" ]; then
+    echo "gamescope-session-plus is not running."
+    return
+  fi
+  echo "Game Mode will restart on $unit."
+  systemd-run --collect /bin/bash -c "sleep 2; sudo -u '$PRIMARY_USER' XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user restart '$unit'" >/dev/null 2>&1 || true
+}
 
 if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
   echo "Sanitizing /etc/environment..."
@@ -115,9 +135,9 @@ if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
   fi
 elif [[ "$OS_TYPE" == *"bazzite"* ]]; then
   if [ "$VENDOR" == "nvidia" ]; then
-    echo "Stopping NVIDIA power services..."
+    echo "Stopping NVIDIA power services without disabling them for the next boot..."
+    systemctl enable nvidia-powerd nvidia-persistenced 2>/dev/null || true
     systemctl stop nvidia-powerd nvidia-persistenced 2>/dev/null || true
-    systemctl disable nvidia-powerd nvidia-persistenced 2>/dev/null || true
     
     echo "Force killing any lingering GPU processes and unloading NVIDIA modules..."
     fuser -kv /dev/nvidia* >/dev/null 2>&1 || true
@@ -136,8 +156,11 @@ elif [[ "$OS_TYPE" == *"bazzite"* ]]; then
   fi
 fi 
 
-echo "Ensuring card is free..."
-fuser -kv /dev/dri/card* >/dev/null 2>&1 || true 
+# Killing every DRM card also kills the Ally session and signs Steam out.
+if [[ "$OS_TYPE" != *"bazzite"* ]]; then
+  echo "Ensuring card is free..."
+  fuser -kv /dev/dri/card* >/dev/null 2>&1 || true
+fi 
 systemctl daemon-reload
 # Final Reload & Restore Handheld UI
 if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
@@ -199,7 +222,11 @@ if id "$PRIMARY_USER" >/dev/null 2>&1; then
   echo "Cleared internal-screen variables from the logged-in session."
 fi
 
-systemctl start sddm #--no-block
+if [[ "$OS_TYPE" == *"bazzite"* ]]; then
+  queue_gamescope_restart
+else
+  systemctl start sddm #--no-block
+fi
 
 #if [ $SUPERGFX_TRIG == 1 ]; then
 #  echo "Restarting supergfxctl..."
