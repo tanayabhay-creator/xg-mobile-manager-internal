@@ -1,0 +1,18 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 7859cae..387f2c4 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -726,9 +726,10 @@ static void UpdateCompatEnvVars()
+ 		setenv( "STEAM_USE_MANGOAPP", "1", 0 );
+ 	}
+ 
+-	// Always set this to false, we never want buffers to be waited on by Mesa.
+-	// That is our job!
+-	setenv( "vk_xwayland_wait_ready", "false", 1 );
++	// Fill this in only when the session left it unset. A session that sets
++	// true is waiting until the frame is finished before the next draw.
++	// Overwriting that lets the panel copy a game frame the GPU is still writing.
++	setenv( "vk_xwayland_wait_ready", "false", 0 );
+ 	if ( g_nCursorScaleHeight > 0 )
+ 	{
+ 		// We always want the biggest cursor size so we can scale it.

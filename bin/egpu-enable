@@ -178,9 +178,6 @@ apply_display_config() {
       echo "__GL_SYNC_TO_VBLANK=0"
       # Sleep instead of spinning while that copy finishes. A spin shows up as CPU heat.
       echo "__GL_YIELD=USLEEP"
-      # Two frames in flight. More than that lets the panel copy an edge the 3080
-      # has not finished, which is the blocky flicker on the character outline.
-      echo "__GL_MaxFramesAllowed=2"
       # Gamescope's present-wait path drops NVIDIA frames when the Ally chip owns
       # the screen. Hide it so a finished frame is what gets copied.
       echo "GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1"
@@ -190,8 +187,7 @@ apply_display_config() {
     # The panel stays at 120 Hz. The plugin does not cap the game's frame rate.
     echo "ADAPTIVE_SYNC="
     echo "STEAM_DISPLAY_REFRESH_LIMITS=120,120"
-    # Do not copy until the frame is finished. false was the change that made the
-    # outline flicker. The versions before that waited, and the outline was clean.
+    # Wait until the 3080 has finished the frame before the Ally panel copies it.
     echo "vk_xwayland_wait_ready=true"
   } > "$display_conf"
   chown "$PRIMARY_USER:" "$display_conf" "$(dirname "$display_conf")" 2>/dev/null || true
@@ -211,10 +207,10 @@ clear_imported_frame_cap() {
       systemctl set-environment STEAM_DISPLAY_REFRESH_LIMITS=120,120 vk_xwayland_wait_ready=true || true
       sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment STEAM_DISPLAY_REFRESH_LIMITS=120,120 vk_xwayland_wait_ready=true || true
       if [ "$VENDOR" = "nvidia" ]; then
-        systemctl set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait __GL_MaxFramesAllowed=2 || true
-        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait __GL_MaxFramesAllowed=2 || true
-        systemctl unset-environment GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG || true
-        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG || true
+        systemctl set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait || true
+        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user set-environment GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT=1 VKD3D_DISABLE_EXTENSIONS=VK_KHR_present_wait || true
+        systemctl unset-environment GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG __GL_MaxFramesAllowed || true
+        sudo -u "$PRIMARY_USER" $DECK_BUS systemctl --user unset-environment GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG __GL_MaxFramesAllowed || true
       fi
     else
       systemctl unset-environment STEAM_DISPLAY_REFRESH_LIMITS vk_xwayland_wait_ready GAMESCOPE_WSI_HIDE_PRESENT_WAIT_EXT VKD3D_DISABLE_EXTENSIONS GAMESCOPE_WSI_ENSURE_MIN_IMAGE_COUNT GAMESCOPE_WSI_MIN_IMAGE_COUNT DXVK_CONFIG __GL_MaxFramesAllowed || true
