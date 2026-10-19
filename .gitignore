@@ -49,3 +49,7 @@ yalc.lock
 .vscode/settings.json
 # Ignore output folder leftovers
 deploy_staging/
+
+# Ally Console build output. Do not ignore the repository bin/ scripts.
+ally-console/**/bin/
+ally-console/**/obj/
