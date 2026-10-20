@@ -22,6 +22,27 @@ dotnet test tests/AllyConsole.Core.Tests/AllyConsole.Core.Tests.csproj
 
 A Linux machine can type-check the WPF project (`EnableWindowsTargeting` is set) and still cannot run it. Do not treat a successful cross build as a launch.
 
+## Publish
+
+On Windows, this writes a self-contained x64 folder. Trimming is off. The Ally does not need the .NET SDK to run the folder. The script also copies `README.txt` and writes `build-info.txt` (version, and the git commit when it is available).
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File publish\publish-win-x64.ps1
+artifacts\win-x64\AllyConsole.exe
+```
+
+Output is `artifacts\win-x64\`. That directory is not committed.
+
+## Timed CPU and memory sample
+
+Not part of the app. Run it yourself against a process that is already running, then it exits. It does not install a service. The 150 ms hidden poll is a design sleep, not a result from this script.
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File publish\measure-process.ps1 -DurationSeconds 60 -IntervalSeconds 1
+```
+
+Record the CSV on the Ally in `docs/hardware-test-results.md`. Leave that sheet empty until then.
+
 ## Run
 
 On Windows:

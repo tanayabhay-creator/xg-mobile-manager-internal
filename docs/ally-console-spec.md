@@ -42,7 +42,9 @@ Microsoft’s Windows developer FAQ (checked 2026-10-19) still supports WPF and 
 
 The app process is a normal user (`asInvoker`). A second launch signals `Local\AllyConsole.Show` and exits. The first process holds `Local\AllyConsole.SingleInstance`.
 
-Status is probed when the panel is open. While the panel is hidden, a slow XInput poll stays alive so the chord still works. Hardware probes pause. The poll sleeps; it does not spin. Default intervals: 150 ms hidden, 50 ms visible, status refresh 2000 ms and never faster than 500 ms in the status loop. The floor for input is 50 ms.
+Status is probed when the panel is open. While the panel is hidden, a slow XInput poll stays alive so the chord still works. Hardware probes pause. The poll sleeps; it does not spin.
+
+The input loop sleeps, then calls `XInputGetState` once. The hidden sleep is `HiddenPollIntervalMs`, default 150, clamped to 50–2000 after settings load (a stored 0 is treated as 150). The visible sleep is `VisiblePollIntervalMs`, default 50, clamped to 50–500. `PollPolicy` also refuses a sleep under 50 ms. A held chord is seen on the next sample, so the wait is at most one interval plus that single `XInputGetState` call. The call time was not measured. A chord that goes down and up between samples can be missed. Hold the chord until the panel opens. The read does not remove the buttons from the game. There is no interception driver, hook, or injection. Visible status refresh defaults to 2000 ms and is not faster than 500 ms in the status loop. While hidden, that loop wakes once a second and does not probe.
 
 `--dev` is the only path that shows sample battery, volume, GPU, brightness, or displays. The banner says they are samples. The flag is not saved. Normal mode shows “unavailable” plus the reason when a probe has not run or has failed.
 
@@ -84,6 +86,8 @@ Closing the panel asks Windows to restore the foreground window captured before 
 
 Logs: `%LOCALAPPDATA%\AllyConsole\logs\ally-console.log`. JSON lines with `ts`, `level`, `event`, `message`. Rotation is by size (default 256 KiB, 5 files including the active file). No credentials and no extra personal data.
 
+Startup failures (`startup.settings`, `startup.shortcut`, `startup.steam`), keyboard-shortcut registration failures (`shortcut.hotkey`), controller-read failures, and unsupported integration lines (brightness, volume, battery, GPU, display, OS, XInput) go through `FailureLogGate`. The same event and message is written once. It is written again only when the message changes, or after that event recovers and fails again. A status refresh every two seconds must not repeat “brightness unsupported”. User-visible error text can still update. This is not a resource sampler.
+
 Sign-in launch is a per-user Startup folder shortcut named `AllyConsole.lnk`. No administrator and no HKLM. Turning it off deletes that shortcut. Tests use `DescriptorStartupShortcutStore` and a temp directory. The Windows app uses `IShellLink` / `IPersistFile` and is the only writer that receives `Environment.SpecialFolder.Startup`.
 
 `OpenSteamBigPictureOnStartup` runs only after the companion has started. It does not by itself create the Startup shortcut.
@@ -110,6 +114,14 @@ Default keyboard shortcut: Ctrl+Alt+Shift+F1. Rejected: empty, unknown key, no m
 ## Background-app module (Stage 2, not built)
 
 Required before any change: inventory first, preview before apply, each change opt-in, and a journal of what, why, dependencies, side effects, original state, and whether rollback exists. Removal is not “perfectly reversible” unless restoration is implemented. No generic “disable all services” script, registry cleaner, forced Windows Update removal, or unverified gaming tweak. Do not terminate arbitrary processes. Keep Windows security, firewall, servicing, drivers, audio, networking, Bluetooth, controller support, required ASUS and XG Mobile components, and store, licensing, and game dependencies. Change update timing only through supported settings. Do not promise that every update or restart can be suppressed.
+
+## Publish
+
+`ally-console/publish/publish-win-x64.ps1` is the Windows Release publish. It builds a self-contained `win-x64` folder at `ally-console/artifacts/win-x64/`. Trimming is off (`PublishTrimmed=false` in the script and in the app project). The folder is a normal directory publish, not a single file. After publish the script copies a short `README.txt` and writes `build-info.txt` with the version, the git commit when `git rev-parse` works, otherwise `commit=unavailable`, and `publishTrimmed=false`. The Ally does not need the .NET SDK to run `AllyConsole.exe` from that folder. The artifacts directory is not committed.
+
+## Timed resource sample
+
+`ally-console/publish/measure-process.ps1` reads CPU and memory of a process that is already running, writes a CSV, and exits. Ally Console does not start it and does not sample itself during normal use. It does not install a service. The first CPU-percent cell is blank because there is no previous sample. If the process is not running, the script writes no file. Poll intervals above are design. They are not measured CPU or memory numbers. Fill measured cells only in `docs/hardware-test-results.md` after a real run.
 
 ## Uncertain integrations
 

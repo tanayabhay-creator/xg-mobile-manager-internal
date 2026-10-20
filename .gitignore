@@ -53,3 +53,4 @@ deploy_staging/
 # Ally Console build output. Do not ignore the repository bin/ scripts.
 ally-console/**/bin/
 ally-console/**/obj/
+ally-console/artifacts/

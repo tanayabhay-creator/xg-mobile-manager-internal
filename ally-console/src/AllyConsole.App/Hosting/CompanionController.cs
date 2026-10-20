@@ -26,6 +26,7 @@ internal sealed class CompanionController : IDisposable
     private readonly WindowsActions _actions;
     private readonly XInputReader _xinput = new();
     private readonly ControllerGestureDecoder _decoder = new();
+    private readonly FailureLogGate _failures = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly HashSet<GamepadButton> _chordDraft = new();
     private readonly string _settingsPath;
@@ -71,6 +72,8 @@ internal sealed class CompanionController : IDisposable
         Log("info", "app.start", developmentMode
             ? "Started in development mode. Sample readings are labelled and are not this PC."
             : "Started.");
+        if (load.Warning is not null)
+            LogFailure("warn", "startup.settings", load.Warning);
         Focus.SetItems(PanelCatalog.Quick(Status));
         Subtitle = QuickSubtitle();
     }
@@ -123,8 +126,16 @@ internal sealed class CompanionController : IDisposable
         {
             var steam = _actions.OpenSteam(Settings.SteamLaunchUri);
             if (!steam.Succeeded)
+            {
                 Error = steam.Message;
-            Log("info", "steam.startup", steam.Code + " " + steam.Message);
+                LogFailure("warn", "startup.steam", steam.Code + " " + steam.Message);
+            }
+            else
+            {
+                _failures.Recovered("startup.steam");
+                Log("info", "startup.steam", steam.Code + " " + steam.Message);
+            }
+
             Notify();
         }
 
@@ -137,7 +148,7 @@ internal sealed class CompanionController : IDisposable
         _hwnd = hwnd;
         var result = _actions.ReplaceHotkey(hwnd, Settings.KeyboardShortcut);
         HotkeyMessage = result.Succeeded ? null : result.Message;
-        Log("info", "hotkey", result.Code + " " + result.Message);
+        LogShortcut(result);
         Notify();
     }
 
@@ -363,6 +374,7 @@ internal sealed class CompanionController : IDisposable
         {
             Error = registered.Message;
             HotkeyMessage = registered.Message;
+            LogShortcut(registered);
             Notify();
             return true;
         }
@@ -387,7 +399,7 @@ internal sealed class CompanionController : IDisposable
 
     public void ReportFault(Exception exception)
     {
-        Log("error", "fault", exception.GetType().Name + ": " + exception.Message);
+        LogFailure("error", "fault", exception.GetType().Name + ": " + exception.Message);
         Error = "Ally Console hit an error and is still running. " + exception.Message;
         Notify();
     }
@@ -421,7 +433,7 @@ internal sealed class CompanionController : IDisposable
         }
 
         var result = _actions.ApplyStartup(Settings.StartWithWindows, Environment.ProcessPath);
-        Log("info", "startup", result.Code + " " + result.Message);
+        LogStartupShortcut(result);
         if (!result.Succeeded && string.IsNullOrEmpty(Error))
             Error = result.Message;
     }
@@ -446,6 +458,9 @@ internal sealed class CompanionController : IDisposable
         var clock = Stopwatch.StartNew();
         while (!token.IsCancellationRequested)
         {
+            // Hidden default is 150 ms. A held chord is seen on the next sample, so
+            // detection waits at most one interval plus this XInputGetState call.
+            // The call does not consume the pad; the game still sees the buttons.
             var interval = PollPolicy.InputIntervalMs(
                 _session.IsOpen,
                 Settings.HiddenPollIntervalMs,
@@ -458,6 +473,7 @@ internal sealed class CompanionController : IDisposable
             }
             catch (Exception ex)
             {
+                LogFailure("error", "controller.read", ex.GetType().Name + ": " + ex.Message);
                 Post(() =>
                 {
                     Error = "Controller read failed. " + ex.Message;
@@ -466,11 +482,18 @@ internal sealed class CompanionController : IDisposable
                 continue;
             }
 
+            _failures.Recovered("controller.read");
+
             var summary = _xinput.Summary;
             var gesture = _decoder.Observe(CurrentChord(), snapshot, clock.Elapsed);
             if (!string.Equals(summary, _lastControllerSummary, StringComparison.Ordinal))
             {
                 _lastControllerSummary = summary;
+                var xinputReason = _xinput.UnavailableReason;
+                if (xinputReason is null)
+                    _failures.Recovered("integration.xinput");
+                else
+                    LogFailure("warn", "integration.xinput", xinputReason);
                 Post(RefreshControllerSubtitle);
             }
 
@@ -547,6 +570,7 @@ internal sealed class CompanionController : IDisposable
         if (_developmentMode || !_session.IsOpen)
             return;
         Status = status;
+        LogIntegrations(status);
         if (_page == "quick")
             Focus.SetItems(PanelCatalog.Quick(Status));
         else if (_page == "diagnostics")
@@ -641,7 +665,7 @@ internal sealed class CompanionController : IDisposable
         var previous = Settings.StartWithWindows;
         Settings.StartWithWindows = enabled;
         var result = _actions.ApplyStartup(enabled, Environment.ProcessPath);
-        Log("info", "startup.toggle", result.Code + " " + result.Message);
+        LogStartupShortcut(result);
         if (!result.Succeeded)
         {
             Settings.StartWithWindows = previous;
@@ -875,6 +899,46 @@ internal sealed class CompanionController : IDisposable
             action();
         else
             _ui.Post(_ => action(), null);
+    }
+
+    private void LogStartupShortcut(OperationResult result)
+    {
+        if (result.Succeeded)
+        {
+            _failures.Recovered("startup.shortcut");
+            Log("info", "startup.shortcut", result.Code + " " + result.Message);
+            return;
+        }
+
+        LogFailure("warn", "startup.shortcut", result.Code + " " + result.Message);
+    }
+
+    private void LogShortcut(OperationResult result)
+    {
+        if (result.Succeeded)
+        {
+            _failures.Recovered("shortcut.hotkey");
+            Log("info", "shortcut.hotkey", result.Code + " " + result.Message);
+            return;
+        }
+
+        LogFailure("warn", "shortcut.hotkey", result.Code + " " + result.Message);
+    }
+
+    private void LogIntegrations(SystemStatus status)
+    {
+        var admitted = _failures.SelectNew(
+            UnsupportedIntegrationLog.Failures(status),
+            UnsupportedIntegrationLog.Events);
+        foreach (var notice in admitted)
+            Log("warn", notice.EventName, notice.Message);
+    }
+
+    private void LogFailure(string level, string eventName, string message)
+    {
+        if (!_failures.ShouldWrite(eventName, message))
+            return;
+        Log(level, eventName, message);
     }
 
     private void Log(string level, string eventName, string message)

@@ -16,9 +16,11 @@ Checkboxes match the tree in `ally-console/` as of Stage 1. Later stages are not
 - [x] Local `settings.json` schema 1. Rotating JSON logs under the user-writable app data folder. No telemetry.
 - [x] Opt-in per-user Startup shortcut, default off, with undo. Tests write only to a temp directory.
 - [x] `--dev` sample data is labelled. Normal mode does not invent battery, volume, or GPU numbers.
-- [x] `dotnet test` on Core: 50 passed, 0 failed (SDK 8.0.426).
+- [x] `dotnet test` on Core: 57 passed, 0 failed (SDK 8.0.426, 2026-10-20). Includes the failure-log gate and the 150 ms detection-delay bound.
+- [x] Windows x64 folder publish script with trimming off, a short README, and `build-info.txt`. The publish arguments were run on the Linux agent. The executable was not started.
+- [x] External timed process sample script. It was not run here, and it is not part of the app.
 - [ ] Run `AllyConsole.exe` on Windows and exercise the window.
-- [ ] Physical Ally checks in `docs/stage-1-report.md`.
+- [ ] Physical Ally checks in `docs/stage-1-report.md`, recorded in `docs/hardware-test-results.md`.
 
 ## Stage 2 — background apps
 

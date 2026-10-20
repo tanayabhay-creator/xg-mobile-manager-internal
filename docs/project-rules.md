@@ -40,13 +40,15 @@ Rules for anyone changing this companion. Stage 1 code is in `ally-console/`. Th
 - Keyboard shortcuts need a modifier. Reject empty chords, duplicate buttons, duplicate bindings, and reserved Windows chords (Guide, Win+L, Win+Tab, Ctrl+Alt+Delete).
 - If `RegisterHotKey` fails, say so in the UI.
 - When the panel closes, restore focus with a supported window API. Log failure. Do not send the panel’s navigation into the game when the panel is the foreground window.
-- A hidden panel may poll XInput slowly. Pause hardware probes that are unnecessary while hidden. Do not busy-spin. Keep a minimum sleep (50 ms in Stage 1).
+- A hidden panel may poll XInput slowly. Pause hardware probes that are unnecessary while hidden. Do not busy-spin. Keep a minimum sleep (50 ms in Stage 1). The default hidden sleep is 150 ms. Do not add an interception driver, hook, or game injection to shorten that delay or to hide the chord from the game.
 
 ## Data
 
 - Settings are local JSON with `schemaVersion`. A newer or corrupt file stays on disk and must not be overwritten.
 - Logs are structured, local, and rotated, under the user-writable app data location.
+- Do not log the same startup failure, shortcut-registration failure, or unsupported-integration failure on every poll or status refresh. Log it when it starts or the message changes, and again only after it recovers.
 - No telemetry. Do not collect credentials or unnecessary personal data.
+- Do not sample CPU or memory inside the companion. A timed reading is an external script run by a person, and it must exit. Do not install a monitoring service. Do not present the 150 ms poll as a measured CPU result.
 - Unsupported features are disabled with an explanation.
 - Mock battery, GPU, volume, brightness, or displays appear only in `--dev`, behind the visible development banner. Normal mode shows unavailable plus the reason.
 

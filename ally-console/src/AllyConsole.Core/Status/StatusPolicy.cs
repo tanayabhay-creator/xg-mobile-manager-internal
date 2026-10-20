@@ -48,4 +48,14 @@ public static class PollPolicy
     /// Volume, brightness, battery, and adapter probes run only while the panel is visible.
     /// </summary>
     public static bool RefreshHardware(bool panelVisible) => panelVisible;
+
+    /// <summary>
+    /// A held chord is observed on the next sample. The input loop sleeps
+    /// <see cref="InputIntervalMs"/> and then calls XInputGetState. The wait is
+    /// therefore one interval, plus the unmeasured time of that single call.
+    /// A chord that is pressed and released between samples is not observed.
+    /// The read does not hide the buttons from the game.
+    /// </summary>
+    public static int MaxHeldChordDetectionDelayMs(bool panelVisible, int hiddenMs, int visibleMs)
+        => InputIntervalMs(panelVisible, hiddenMs, visibleMs);
 }
