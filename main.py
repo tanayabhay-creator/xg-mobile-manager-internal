@@ -422,10 +422,11 @@ class Plugin:
             "HOME": home_dir
           }
 
-          result = subprocess.run([
-            script_path, 
-            vendor, os_type, LOG_DIR, DATA_DIR
-          ], capture_output=True, text=True, check=False, env=sterile_env)
+          result = await asyncio.to_thread(
+            subprocess.run,
+            [script_path, vendor, os_type, LOG_DIR, DATA_DIR],
+            capture_output=True, text=True, check=False, env=sterile_env
+          )
 
           desktopdefault = await self.get_setting("desktop_default", "0")
           #if desktopdefault == "1":
@@ -434,7 +435,6 @@ class Plugin:
           if os_type != "steamos":
             write_log(f"Telling python to wait 5 seconds before sending gamescope command to switch back to GameMode")
             await asyncio.sleep(5)
-          write_log(f"Running the command...")
           safe_env = {
             "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
             "USER": username,
@@ -442,17 +442,20 @@ class Plugin:
             "XDG_RUNTIME_DIR": f"/run/user/{uid}",
             "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus"
           }
-          result = subprocess.run(
-            ["sudo", "-E", "-u", username, "/usr/bin/steamos-session-select", "gamescope"],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=safe_env
-          )
-
-          write_log(f"Command exited with code: {result.returncode}")
-          if result.stdout: write_log("STDOUT:\n" + result.stdout.strip())
-          if result.stderr: write_log("STDERR:\n" + result.stderr.strip())
+          transient = ("TransactionIsDestructive", "NameHasNoOwner", "concurrent deactivation", "No such file or directory")
+          for attempt in range(1, 4):
+            write_log(f"Selecting Game Mode (attempt {attempt}).")
+            result = await asyncio.to_thread(
+              subprocess.run,
+              ["sudo", "-E", "-u", username, "/usr/bin/steamos-session-select", "gamescope"],
+              capture_output=True, text=True, check=False, env=safe_env
+            )
+            write_log(f"Command exited with code: {result.returncode}")
+            if result.stdout: write_log("STDOUT:\n" + result.stdout.strip())
+            if result.stderr: write_log("STDERR:\n" + result.stderr.strip())
+            if result.returncode == 0 or not any(err in (result.stderr or "") for err in transient):
+              break
+            await asyncio.sleep(3)
         
         except Exception as e:
           # Bleed the error to the fallback log, but DO NOT return. Let the loop survive.
@@ -524,10 +527,11 @@ class Plugin:
             "HOME": home_dir
           }
 
-          result = subprocess.run([
-            script_path, 
-            vendor, os_type, LOG_DIR, DATA_DIR, display_target
-          ], capture_output=True, text=True, check=False, env=sterile_env)
+          result = await asyncio.to_thread(
+            subprocess.run,
+            [script_path, vendor, os_type, LOG_DIR, DATA_DIR, display_target],
+            capture_output=True, text=True, check=False, env=sterile_env
+          )
         
           write_log(f"Command exited with code: {result.returncode}")
           if result.returncode == 0: 

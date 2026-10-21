@@ -11,6 +11,9 @@ mkdir -p "$DATA_DIR/configs"
 exec > "$LOG_DIR/xgmobile_manager_enable_${VENDOR}.log" 2>&1
 
 echo "--- XG Mobile Enable ($VENDOR) Started at $(date) ---"
+. "$(dirname "$(readlink -f "$0")")/xgm-session.sh" || { echo "ERROR: xgm-session.sh is missing. Reinstall XG Mobile Manager."; exit 9; }
+XGM_KNOWN_SESSIONS=$(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$PRIMARY_USER" '$3 == u { print $1 }' | xargs)
+echo "Login sessions before enable: ${XGM_KNOWN_SESSIONS:-none}"
 
 # external = current behavior, gamescope scans out of the XG Mobile ports.
 # internal = Game Mode stays on the handheld panel; games render on the eGPU.
@@ -430,18 +433,7 @@ fi
   # STOP UI
 # We must stop sddm so we can unload the driver modules
 select_gamescope_session() {
-  local uid
-  if ! id "$PRIMARY_USER" >/dev/null 2>&1; then
-    echo "No logged-in user. Game Mode was not selected."
-    return
-  fi
-  uid=$(id -u "$PRIMARY_USER")
-  echo "Selecting Game Mode for the next SteamOS login."
-  if [ -S "/run/user/$uid/bus" ]; then
-    sudo -u "$PRIMARY_USER" XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus /usr/bin/steamos-session-select gamescope || true
-  else
-    sudo -u "$PRIMARY_USER" /usr/bin/steamos-session-select gamescope || true
-  fi
+  xgm_select_gamescope "$PRIMARY_USER"
 }
 
 queue_gamescope_restart() {
@@ -530,7 +522,13 @@ EOF"
     # Final Reload & Start
     echo "Daemon-reload and start SDDM..."
     systemctl daemon-reload
-    sudo -u $PRIMARY_USER $DECK_BUS systemctl --user daemon-reload
+    USER_UID=$(id -u "$PRIMARY_USER")
+    if [ "$(systemctl show -p ActiveState --value "user@$USER_UID.service" 2>/dev/null)" = "active" ] \
+      && [ -S "/run/user/$USER_UID/bus" ]; then
+      xgm_user_systemctl "$PRIMARY_USER" "$USER_UID" daemon-reload || true
+    else
+      echo "Login session is not running. No user reload."
+    fi
 
   elif [ "$VENDOR" == "amd" ]; then
     echo "AMD Vendor detected. Applying display target..."
@@ -543,8 +541,9 @@ echo "Refreshing DRM session..."
 if [[ "$OS_TYPE" == *"bazzite"* ]]; then
   queue_gamescope_restart
 elif [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
-  select_gamescope_session
+  xgm_restart_dirty_user_manager "$PRIMARY_USER"
   systemctl start sddm #--no-block
+  select_gamescope_session
 else
   systemctl start sddm #--no-block
 fi

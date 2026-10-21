@@ -28,6 +28,46 @@ if [ "$VENDOR" == "amd" ]; then
 fi
 
 if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
+  # nvidia-drm registers the XG Mobile card a fraction of a second after this
+  # service starts. Wait for that card before deciding the dock is missing.
+  nvidia_drm_present() {
+    local card
+    for card in /sys/class/drm/card*; do
+      case "$(basename "$card")" in
+        card[0-9]|card[0-9][0-9]) ;;
+        *) continue ;;
+      esac
+      [ "$(cat "$card/device/vendor" 2>/dev/null)" = "0x10de" ] && return 0
+    done
+    return 1
+  }
+  if nvidia_drm_present; then
+    echo "eGPU DRM card already present."
+  else
+    EGPU_PCI=""
+    for dev in /sys/bus/pci/devices/*; do
+      [ "$(cat "$dev/vendor" 2>/dev/null)" = "0x10de" ] || continue
+      class=$(cat "$dev/class" 2>/dev/null)
+      case "$class" in
+        0x03*) EGPU_PCI="$dev"; break ;;
+      esac
+    done
+    if [ -n "$EGPU_PCI" ] && udevadm wait --help >/dev/null 2>&1; then
+      udevadm wait --timeout=10 "/dev/dri/by-path/pci-$(basename "$EGPU_PCI")-card" >/dev/null 2>&1 || true
+    else
+      WAITED=0
+      while [ "$WAITED" -lt 40 ] && ! nvidia_drm_present; do
+        sleep 0.25
+        WAITED=$((WAITED + 1))
+      done
+    fi
+    if nvidia_drm_present; then
+      echo "eGPU DRM card appeared."
+    else
+      echo "eGPU DRM card did not appear within 10s."
+    fi
+  fi
+
   # Foolproof detection of exact DRM nodes based on hardware vendor ID
   for card in /sys/class/drm/card*; do
     case "$(basename "$card")" in
@@ -43,7 +83,7 @@ if [[ "$OS_TYPE" == "steamos" || "$OS_TYPE" == *"cachyos"* ]]; then
   done
 
   if [ -z "$EGPU_CARD" ] || [ -z "$IGPU_CARD" ]; then
-    echo "WARNING: Failed to detect both GPUs on the PCIe bus. Sync aborted."
+    echo "WARNING: the eGPU DRM card did not appear within 10s, or the handheld GPU is missing. Sync aborted."
     exit 1
   fi
 
