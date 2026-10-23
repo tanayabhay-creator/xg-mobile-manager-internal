@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RootNamespace>AllyConsole.App</RootNamespace>
+    <AssemblyName>AllyConsole</AssemblyName>
+    <Version>1.0.0</Version>
+    <LangVersion>12</LangVersion>
+    <!-- Folder publish stays untrimmed. The Windows script also passes this property. -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- Lets a non-Windows SDK compile against the Windows desktop reference assemblies. The app still runs only on Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Description>Stage 1 WPF shell for Ally Console. Normal user, no elevated helper.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AllyConsole.Core\AllyConsole.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+</Project>

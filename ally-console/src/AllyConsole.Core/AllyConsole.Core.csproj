@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>AllyConsole.Core</RootNamespace>
+    <AssemblyName>AllyConsole.Core</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <LangVersion>12</LangVersion>
+    <Description>Testable core for Ally Console. No Windows UI and no hardware writes.</Description>
+  </PropertyGroup>
+</Project>

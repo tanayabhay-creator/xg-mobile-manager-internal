@@ -1,5 +1,7 @@
 # XG Mobile Manager — internal screen and power limits
 
+**Windows companion:** Stage 1 of [Ally Console](ally-console/README.md) lives in `ally-console/`. It does not change this Decky plugin.
+
 **Derivative work.** This repository is [Kenny Hood (Kentronix)'s XG Mobile Manager](https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager), published under GPL-3, plus the changes listed below. The enable and eject design, NVIDIA driver installation, and Decky interface are his. This is not a new plugin and it is not a replacement of his authorship.
 
 Changes on top of his plugin:
